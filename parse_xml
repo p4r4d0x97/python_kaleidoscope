@@ -1,0 +1,69 @@
+import xml.etree.ElementTree as ET
+
+def update_or_add_device(xml_file, ip_range, device_data):
+    # Parse the XML file
+    tree = ET.parse(xml_file)
+    root = tree.getroot()
+
+    # Loop through the IP range
+    for ip in ip_range:
+        device = None
+        for dev in root.findall('device'):
+            ip_elem = dev.find('ip')
+            if ip_elem is not None and ip_elem.text == ip:
+                device = dev
+                break
+
+        # If the device doesn't exist, create a new one
+        if device is None:
+            print(f"Adding new device with IP: {ip}")
+            device = ET.Element('device')
+            name_elem = ET.Element('name')
+            name_elem.text = f"Device_{ip}"  # Default name, you can modify based on your logic
+            device.append(name_elem)
+            ip_elem = ET.Element('ip')
+            ip_elem.text = ip
+            device.append(ip_elem)
+            root.append(device)
+
+        # Update or add fields based on the given data
+        for tag, new_value in device_data.items():
+            if new_value is not None and new_value != "":  # Don't update if the value is empty or None
+                element = device.find(tag)
+                if element is not None:
+                    # Compare and update the value if it's different
+                    if element.text != str(new_value):
+                        print(f"Updating <{tag}> from {element.text} to {new_value}")
+                        element.text = str(new_value)
+                else:
+                    # If the tag doesn't exist, create and append it
+                    print(f"Adding <{tag}> with value {new_value}")
+                    new_element = ET.Element(tag)
+                    new_element.text = str(new_value)
+                    device.append(new_element)
+
+    # Save the updated XML
+    tree.write(xml_file)
+
+# Define the range of IPs (192.168.1.1 to 192.168.1.255)
+ip_range = [f"192.168.1.{i}" for i in range(1, 256)]
+
+# Example device data to update
+device_data = {
+    'mac': '00:1A:2B:3C:4D:5F',
+    'switch': 'Switch1',
+    'port': 'Gi0/1',
+    'vlan': 10,
+    'nics': 2,
+    'second_ip': '10.10.10.10',
+    'second_mac': '00:1A:2B:3C:4D:5A',
+    'user_logged': 'admin',
+    'criticality': 'High',
+    'image': '/images/device.png',
+    'model': 'Dell XPS',
+    'url': 'http://192.168.1.100',
+    'html_file': r'C:\backup\device.html'
+}
+
+# Call the function to update or add devices
+update_or_add_device('network.xml', ip_range, device_data)
