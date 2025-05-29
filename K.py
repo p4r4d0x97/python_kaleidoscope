@@ -5,7 +5,7 @@ import dash
 import json
 import subprocess
 import time
-from dash import Dash, dcc, html, dash_table, Input, Output, State
+from dash import Dash, dcc, html, dash_table, Input, Output, State, no_update
 import ipaddress
 import plotly.express as px
 import random
@@ -307,7 +307,8 @@ def display_page(pathname):
                 ], style={'marginTop': '10px'}))
 
             # Add HTML file button if present
-            if device['html_file'] and device['html_file'].strip():
+            has_html_file = device['html_file'] and device['html_file'].strip()  # EDIT: Store condition for use in callback
+            if has_html_file:
                 html_file_path = device['html_file']
                 details.append(html.P([
                     html.Span("Device HTML: ", style={'fontWeight': 'bold'}),
@@ -315,7 +316,8 @@ def display_page(pathname):
                 ], style={'marginTop': '10px'}))
 
             # Config file section
-            if config_files:
+            has_config_files = len(config_files) > 0  # EDIT: Store condition for use in callback
+            if has_config_files:
                 file_path_map = {str(i): file_path for i, file_path in enumerate(config_files)}
                 config_section = [
                     html.H4("Configuration Files", style={'marginTop': '20px'}),
@@ -332,6 +334,10 @@ def display_page(pathname):
             else:
                 file_path_map = {}
                 config_section = [html.P("No configuration files found.", style={'marginTop': '20px'})]
+
+            # EDIT: Store has_html_file and has_config_files in file-path-map for callback use
+            file_path_map['has_html_file'] = has_html_file
+            file_path_map['has_config_files'] = has_config_files
 
             return (
                 html.Div([
@@ -357,27 +363,33 @@ def display_page(pathname):
     Output('config-content', 'children'),
     Input({'type': 'view-config-btn', 'index': dash.ALL}, 'n_clicks'),
     Input({'type': 'view-explorer-btn', 'index': dash.ALL}, 'n_clicks'),
-    Input('open-html-btn', 'n_clicks'),  # EDIT: Kept as input, but handled carefully below
+    Input('open-html-btn', 'n_clicks'),
     State({'type': 'view-config-btn', 'index': dash.ALL}, 'id'),
     State({'type': 'view-explorer-btn', 'index': dash.ALL}, 'id'),
     State('file-path-map', 'data'),
-    State('url', 'pathname')
+    State('url', 'pathname'),
+    prevent_initial_call=True  # EDIT: Prevent callback from running on page load
 )
 def display_config_content(view_n_clicks, explorer_n_clicks, html_n_clicks, view_button_ids, explorer_button_ids,
                            file_path_map, pathname):
     ctx = dash.callback_context
-    # EDIT: Check if any input was triggered to avoid processing when no buttons are clicked
-    if not ctx.triggered or (not any(view_n_clicks) and not any(explorer_n_clicks) and html_n_clicks == 0):
-        print("No valid button clicks detected.")
-        return dash.no_update
+    # EDIT: Early return if no inputs triggered or no relevant components exist
+    if not ctx.triggered:
+        print("No button clicks triggered.")
+        return no_update
 
-    # EDIT: Safely get the triggered ID
+    # EDIT: Check if relevant components exist
+    has_html_file = file_path_map.get('has_html_file', False)
+    has_config_files = file_path_map.get('has_config_files', False)
     triggered_prop_id = ctx.triggered[0]['prop_id']
-    print(f"Triggered prop_id: {triggered_prop_id}")
+    print(f"Triggered prop_id: {triggered_prop_id}, has_html_file: {has_html_file}, has_config_files: {has_config_files}")
 
     try:
         if triggered_prop_id == 'open-html-btn.n_clicks':
-            # Handle HTML file button click
+            # EDIT: Only process if HTML button exists
+            if not has_html_file:
+                print("open-html-btn triggered but no HTML file available.")
+                return html.P("Error: HTML file button not available for this device.")
             if not pathname or not pathname.startswith('/device/'):
                 print("Invalid pathname for device page.")
                 return html.P("Error: Invalid device page.")
@@ -395,7 +407,10 @@ def display_config_content(view_n_clicks, explorer_n_clicks, html_n_clicks, view
                 print(f"Failed to open HTML file: {str(e)}")
                 return html.P(f"Error opening HTML file: {str(e)}")
         else:
-            # Handle config file buttons
+            # EDIT: Only process config buttons if config files exist
+            if not has_config_files:
+                print("Config button triggered but no config files available.")
+                return html.P("Error: No configuration files available for this device.")
             try:
                 triggered_id_dict = json.loads(triggered_prop_id.split('.')[0].replace("'", '"'))
                 button_type = triggered_id_dict['type']
