@@ -16,7 +16,7 @@ from functools import lru_cache
 PING_CACHE = {}  # {ip: (timestamp, status)}
 CONFIG_FILE_CACHE = {}  # {ip: [file_paths]}
 
-# Load or parse XML into DataFrame
+# EDIT: Add validation for XML data
 def load_xml(path):
     tree = ET.parse(path)
     root = tree.getroot()
@@ -24,23 +24,32 @@ def load_xml(path):
     for device in root.findall('device'):
         entry = {
             'id': str(uuid.uuid4()),
-            'name': device.find('name').text,
-            'name_lower': device.find('name').text.lower() if device.find('name').text else '',
-            'mac': device.find('mac').text,
-            'ip': device.find('ip').text,
-            'switch': device.find('switch').text,
-            'port': device.find('port').text,
-            'vlan': device.find('vlan').text,
-            'nics': device.find('nics').text,
-            'second_ip': device.find('second_ip').text,
-            'second_mac': device.find('second_mac').text,
-            'user_logged': device.find('user_logged').text,
+            'name': device.find('name').text if device.find('name') is not None else '',
+            'name_lower': device.find('name').text.lower() if device.find('name') is not None and device.find('name').text else '',
+            'mac': device.find('mac').text if device.find('mac') is not None else '',
+            'ip': device.find('ip').text if device.find('ip') is not None else '',
+            'switch': device.find('switch').text if device.find('switch') is not None else '',
+            'port': device.find('port').text if device.find('port') is not None else '',
+            'vlan': device.find('vlan').text if device.find('vlan') is not None else '',
+            'nics': device.find('nics').text if device.find('nics') is not None else '',
+            'second_ip': device.find('second_ip').text if device.find('second_ip') is not None else '',
+            'second_mac': device.find('second_mac').text if device.find('second_mac') is not None else '',
+            'user_logged': device.find('user_logged').text if device.find('user_logged') is not None else '',
             'criticality': device.find('criticality').text if device.find('criticality') is not None else '',
             'image': device.find('image').text if device.find('image') is not None else '',
             'model': device.find('model').text if device.find('model') is not None else '',
             'url': device.find('url').text if device.find('url') is not None else '',
-            'html_file': device.find('html_file').text if device.find('html_file') is not None else '',
+            'html_file': '',
         }
+        # Validate html_file
+        if device.find('html_file') is not None and device.find('html_file').text:
+            html_file = device.find('html_file').text
+            if not Path(html_file).is_file():
+                print(f"Warning: HTML file does not exist for device {entry['ip']}: {html_file}")
+                html_file = ''
+            entry['html_file'] = html_file
+        else:
+            print(f"Warning: No HTML file specified for device {entry['ip']}")
         data.append(entry)
     return pd.DataFrame(data)
 
@@ -198,7 +207,7 @@ def update_table(name, ip_start, ip_end, mac, switch, port, vlan, criticality):
     filtered_criticalities = filtered['criticality'].unique()
 
     graphs = [
-        dcc.Graph(figure=px.bar(
+        dcc-graph(figure=px.bar(
             vlan_counts[vlan_counts['vlan'].isin(filtered_vlans)],
             x="vlan", y="count", title="Devices per VLAN",
             color="vlan", color_discrete_map=vlan_colors
@@ -238,6 +247,7 @@ def display_page(pathname):
         device_id = pathname.split('/device/')[1]
         try:
             device = df[df["id"] == device_id].iloc[0]
+            print(f"Loading device page for ID: {device_id}, IP: {device['ip']}")  # EDIT: Log device details
 
             # Check ping status with caching
             current_time = time.time()
@@ -262,7 +272,7 @@ def display_page(pathname):
             ip = device['ip']
             if ip in CONFIG_FILE_CACHE:
                 config_files = CONFIG_FILE_CACHE[ip]
-                print(f"Using cached config files for {ip}")
+                print(f"Using cached config files for {ip}: {len(config_files)} files")
             else:
                 config_files = []
                 backup_dir = Path(f"C:/backup/{ip}")
@@ -307,16 +317,18 @@ def display_page(pathname):
                 ], style={'marginTop': '10px'}))
 
             # Add HTML file button if present
-            has_html_file = device['html_file'] and device['html_file'].strip()  # EDIT: Store condition for use in callback
+            has_html_file = device['html_file'] and device['html_file'].strip() and Path(device['html_file']).is_file()  # EDIT: Validate file existence
             if has_html_file:
                 html_file_path = device['html_file']
                 details.append(html.P([
                     html.Span("Device HTML: ", style={'fontWeight': 'bold'}),
                     html.Button("Open HTML File", id='open-html-btn', n_clicks=0, style={'marginLeft': '10px'})
                 ], style={'marginTop': '10px'}))
+            else:
+                print(f"No valid HTML file for device {device['ip']}")  # EDIT: Log missing HTML file
 
             # Config file section
-            has_config_files = len(config_files) > 0  # EDIT: Store condition for use in callback
+            has_config_files = len(config_files) > 0
             if has_config_files:
                 file_path_map = {str(i): file_path for i, file_path in enumerate(config_files)}
                 config_section = [
@@ -334,8 +346,9 @@ def display_page(pathname):
             else:
                 file_path_map = {}
                 config_section = [html.P("No configuration files found.", style={'marginTop': '20px'})]
+                print(f"No config files for device {device['ip']}")  # EDIT: Log missing config files
 
-            # EDIT: Store has_html_file and has_config_files in file-path-map for callback use
+            # EDIT: Store flags in file_path_map
             file_path_map['has_html_file'] = has_html_file
             file_path_map['has_config_files'] = has_config_files
 
@@ -349,6 +362,7 @@ def display_page(pathname):
                 file_path_map
             )
         except IndexError:
+            print(f"Device not found for ID: {device_id}")  # EDIT: Log device not found
             return (
                 html.Div([
                     html.H3("Error"),
@@ -359,116 +373,118 @@ def display_page(pathname):
             )
     return dashboard_layout, {}
 
+# EDIT: New callback for handling open-html-btn
 @app.callback(
     Output('config-content', 'children'),
+    Input('open-html-btn', 'n_clicks'),
+    State('file-path-map', 'data'),
+    State('url', 'pathname'),
+    prevent_initial_call=True
+)
+def handle_html_button(html_n_clicks, file_path_map, pathname):
+    if not html_n_clicks or not file_path_map.get('has_html_file', False):
+        print("HTML button callback triggered but no clicks or no HTML file available.")
+        return no_update
+
+    print(f"HTML button clicked, n_clicks: {html_n_clicks}")
+    try:
+        if not pathname or not pathname.startswith('/device/'):
+            print("Invalid pathname for device page.")
+            return html.P("Error: Invalid device page.")
+        device_id = pathname.split('/device/')[1]
+        device = df[df["id"] == device_id].iloc[0]
+        html_file_path = device['html_file']
+        if not html_file_path or not Path(html_file_path).is_file():
+            print(f"HTML file does not exist: {html_file_path}")
+            return html.P(f"HTML file not found: {html_file_path}")
+        try:
+            subprocess.run(['start', '', html_file_path], shell=True)
+            print(f"Opened HTML file: {html_file_path}")
+            return ""  # Clear content
+        except Exception as e:
+            print(f"Failed to open HTML file: {str(e)}")
+            return html.P(f"Error opening HTML file: {str(e)}")
+    except Exception as e:
+        print(f"Error processing HTML button click: {str(e)}")
+        return html.P(f"Error processing button click: {str(e)}")
+
+# EDIT: New callback for handling config file buttons
+@app.callback(
+    Output('config-content', 'children', allow_duplicate=True),  # EDIT: Allow duplicate output
     Input({'type': 'view-config-btn', 'index': dash.ALL}, 'n_clicks'),
     Input({'type': 'view-explorer-btn', 'index': dash.ALL}, 'n_clicks'),
-    Input('open-html-btn', 'n_clicks'),
     State({'type': 'view-config-btn', 'index': dash.ALL}, 'id'),
     State({'type': 'view-explorer-btn', 'index': dash.ALL}, 'id'),
     State('file-path-map', 'data'),
-    State('url', 'pathname'),
-    prevent_initial_call=True  # EDIT: Prevent callback from running on page load
+    prevent_initial_call=True
 )
-def display_config_content(view_n_clicks, explorer_n_clicks, html_n_clicks, view_button_ids, explorer_button_ids,
-                           file_path_map, pathname):
+def handle_config_buttons(view_n_clicks, explorer_n_clicks, view_button_ids, explorer_button_ids, file_path_map):
     ctx = dash.callback_context
-    # EDIT: Early return if no inputs triggered or no relevant components exist
-    if not ctx.triggered:
-        print("No button clicks triggered.")
+    if not ctx.triggered or not file_path_map.get('has_config_files', False):
+        print("Config button callback triggered but no clicks or no config files available.")
         return no_update
 
-    # EDIT: Check if relevant components exist
-    has_html_file = file_path_map.get('has_html_file', False)
-    has_config_files = file_path_map.get('has_config_files', False)
     triggered_prop_id = ctx.triggered[0]['prop_id']
-    print(f"Triggered prop_id: {triggered_prop_id}, has_html_file: {has_html_file}, has_config_files: {has_config_files}")
+    print(f"Config button triggered: {triggered_prop_id}, view_n_clicks: {view_n_clicks}, explorer_n_clicks: {explorer_n_clicks}")
 
     try:
-        if triggered_prop_id == 'open-html-btn.n_clicks':
-            # EDIT: Only process if HTML button exists
-            if not has_html_file:
-                print("open-html-btn triggered but no HTML file available.")
-                return html.P("Error: HTML file button not available for this device.")
-            if not pathname or not pathname.startswith('/device/'):
-                print("Invalid pathname for device page.")
-                return html.P("Error: Invalid device page.")
-            device_id = pathname.split('/device/')[1]
-            device = df[df["id"] == device_id].iloc[0]
-            html_file_path = device['html_file']
-            if not html_file_path or not Path(html_file_path).is_file():
-                print(f"HTML file does not exist: {html_file_path}")
-                return html.P(f"HTML file not found: {html_file_path}")
-            try:
-                subprocess.run(['start', '', html_file_path], shell=True)
-                print(f"Opened HTML file: {html_file_path}")
-                return ""  # Return empty string to clear content
-            except Exception as e:
-                print(f"Failed to open HTML file: {str(e)}")
-                return html.P(f"Error opening HTML file: {str(e)}")
-        else:
-            # EDIT: Only process config buttons if config files exist
-            if not has_config_files:
-                print("Config button triggered but no config files available.")
-                return html.P("Error: No configuration files available for this device.")
-            try:
-                triggered_id_dict = json.loads(triggered_prop_id.split('.')[0].replace("'", '"'))
-                button_type = triggered_id_dict['type']
-                button_index = triggered_id_dict['index']
-            except (json.JSONDecodeError, KeyError):
-                print(f"Invalid triggered ID format: {triggered_prop_id}")
-                return html.P("Error: Invalid button ID format.")
+        triggered_id_dict = json.loads(triggered_prop_id.split('.')[0].replace("'", '"'))
+        button_type = triggered_id_dict['type']
+        button_index = triggered_id_dict['index']
 
-            file_path = file_path_map.get(button_index) if file_path_map else None
-            if not file_path:
-                print(f"No file path found for index: {button_index}")
-                return html.P(f"Error: No file path found for button index {button_index}")
-            print(f"Button clicked: {button_type} for file: {file_path}")
-            file_path = str(Path(file_path))
-            dir_path = str(Path(file_path).parent)
-            print(f"Processing file: {file_path}, directory: {dir_path}")
+        file_path = file_path_map.get(button_index) if file_path_map else None
+        if not file_path:
+            print(f"No file path found for index: {button_index}")
+            return html.P(f"Error: No file path found for button index {button_index}")
+        print(f"Button clicked: {button_type} for file: {file_path}")
+        file_path = str(Path(file_path))
+        dir_path = str(Path(file_path).parent)
+        print(f"Processing file: {file_path}, directory: {dir_path}")
 
-            if button_type == 'view-config-btn':
-                if not Path(file_path).is_file():
-                    print(f"File does not exist or is not a file: {file_path}")
-                    return html.P(f"File not found: {file_path}")
-                encodings = ['utf-8', 'latin-1', 'ascii']
-                for encoding in encodings:
-                    try:
-                        with open(file_path, 'r', encoding=encoding) as f:
-                            content = f.read()
-                        print(f"Successfully read file with {encoding} encoding")
-                        return html.Pre(content,
-                                        style={'backgroundColor': '#f0f0f0', 'padding': '10px',
-                                               'border': '1px solid #ccc'})
-                    except UnicodeDecodeError:
-                        print(f"Failed to read file with {encoding} encoding")
-                        continue
-                    except FileNotFoundError:
-                        print(f"File not found during read attempt: {file_path}")
-                        return html.P(f"File not found: {file_path}")
-                    except PermissionError:
-                        print(f"Permission denied for file: {file_path}")
-                        return html.P(f"Permission denied: {file_path}")
-                    except Exception as e:
-                        print(f"Unexpected error reading file: {str(e)}")
-                        return html.P(f"Error reading file: {str(e)}")
-                print("All encoding attempts failed")
-                return html.P("Unable to read file: Invalid encoding or corrupted file.")
-            elif button_type == 'view-explorer-btn':
+        if button_type == 'view-config-btn':
+            if not Path(file_path).is_file():
+                print(f"File does not exist or is not a file: {file_path}")
+                return html.P(f"File not found: {file_path}")
+            encodings = ['utf-8', 'latin-1', 'ascii']
+            for encoding in encodings:
                 try:
-                    subprocess.run(['explorer.exe', dir_path])
-                    print(f"Opened Windows Explorer to: {dir_path}")
-                    return ""
+                    with open(file_path, 'r', encoding=encoding) as f:
+                        content = f.read()
+                    print(f"Successfully read file with {encoding} encoding")
+                    return html.Pre(content,
+                                    style={'backgroundColor': '#f0f0f0', 'padding': '10px',
+                                           'border': '1px solid #ccc'})
+                except UnicodeDecodeError:
+                    print(f"Failed to read file with {encoding} encoding")
+                    continue
+                except FileNotFoundError:
+                    print(f"File not found during read attempt: {file_path}")
+                    return html.P(f"File not found: {file_path}")
+                except PermissionError:
+                    print(f"Permission denied for file: {file_path}")
+                    return html.P(f"Permission denied: {file_path}")
                 except Exception as e:
-                    print(f"Failed to open Windows Explorer: {str(e)}")
-                    return html.P(f"Error opening directory in Explorer: {str(e)}")
-            else:
-                print(f"Unknown button type: {button_type}")
-                return html.P(f"Error: Unknown button type {button_type}")
+                    print(f"Unexpected error reading file: {str(e)}")
+                    return html.P(f"Error reading file: {str(e)}")
+            print("All encoding attempts failed")
+            return html.P("Unable to read file: Invalid encoding or corrupted file.")
+        elif button_type == 'view-explorer-btn':
+            try:
+                subprocess.run(['explorer.exe', dir_path])
+                print(f"Opened Windows Explorer to: {dir_path}")
+                return ""
+            except Exception as e:
+                print(f"Failed to open Windows Explorer: {str(e)}")
+                return html.P(f"Error opening directory in Explorer: {str(e)}")
+        else:
+            print(f"Unknown button type: {button_type}")
+            return html.P(f"Error: Unknown button type {button_type}")
     except Exception as e:
-        print(f"Error processing button click: {str(e)}")
+        print(f"Error processing config button click: {str(e)}")
         return html.P(f"Error processing button click: {str(e)}")
 
 if __name__ == '__main__':
+    # EDIT: Clear caches to avoid stale data
+    PING_CACHE.clear()
+    CONFIG_FILE_CACHE.clear()
     app.run(debug=True)
