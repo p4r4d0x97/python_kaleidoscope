@@ -11,7 +11,12 @@ device_data = [
     ["192.168.1.13", "00:1A:2B:3C:4D:61", 40, 51, "192.168.1.100", "SFP2"],
     ["192.168.1.14", "00:1A:2B:3C:4D:62", 10, 52, "192.168.1.100", "SFP3"],
     ["192.168.2.10", "00:1A:2B:3C:4D:63", 10, 1, "192.168.1.101", "PC2"],
-    ["0.0.0.0", None, None, 0, "0.0.0.0", None]  # Example of no data
+    ["0.0.0.0", None, None, 0, "0.0.0.0", None],
+    ["192.168.1.15", "00:1A:2B:3C:4D:64", 20, 1, "192.168.1.100", "AccessPoint1"],
+    ["192.168.1.122", "00:1A:2B:3C:4D:64", 50, 1, "192.168.1.100", "AccessPoint1"],
+    ["192.168.1.123", "00:1A:2B:3C:4D:64", 30, 1, "192.168.1.100", "AccessPoint1"],
+    ["192.168.1.124", "00:1A:2B:3C:4D:64", 40, 1, "192.168.1.100", "AccessPoint1"],
+
 ]
 
 switch_info = [
@@ -19,7 +24,7 @@ switch_info = [
     ["192.168.1.101", "Switch 2: Edge Switch, Location: Office 2"]
 ]
 
-# HTML template with escaped curly braces
+# HTML template with comments for adding new VLAN
 html_template = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -44,7 +49,7 @@ html_template = """<!DOCTYPE html>
         .layout-container {{
             margin-bottom: 40px;
         }}
-        .layout-title {{
+        .layout-title {{ 
             font-size: 18px;
             font-weight: bold;
             margin-bottom: 10px;
@@ -76,17 +81,21 @@ html_template = """<!DOCTYPE html>
         .port-unused {{
             background-color: #6c757d;
         }}
+        /* VLAN-specific colors */
         .vlan-10 {{ background-color: #007bff; }}
         .vlan-20 {{ background-color: #dc3545; }}
         .vlan-30 {{ background-color: #ffc107; }}
         .vlan-40 {{ background-color: #17a2b8; }}
         .vlan-unknown {{ background-color: #6c757d; }}
+        .multiple-vlans {{ 
+            background: linear-gradient(45deg, #007bff 50%, #dc3545 50%); 
+        }}
         .sfp-port {{
             border: 2px solid #ffd700;
         }}
         .tooltip {{
             visibility: hidden;
-            width: 200px;
+            width: 250px;
             background-color: #333;
             color: #fff;
             text-align: center;
@@ -113,6 +122,14 @@ html_template = """<!DOCTYPE html>
             width: 100%;
             max-width: 600px;
             white-space: pre-wrap;
+        }}
+        .vlan-text {{
+            font-size: 10px;
+            position: absolute;
+            bottom: 2px;
+            right: 2px;
+            color: white;
+            text-shadow: 1px 1px 1px #000;
         }}
     </style>
 </head>
@@ -148,26 +165,46 @@ html_template = """<!DOCTYPE html>
                 const portData = switchData.ports.find(p => p.port === i) || {{
                     port: i,
                     used: false,
-                    vlan: null,
-                    device: null,
-                    mac: null,
+                    vlans: [],
+                    devices: [],
                     is_sfp: i > 48
                 }};
 
+                // Usage layout
                 const usagePort = document.createElement('div');
                 usagePort.className = `port ${{portData.used ? 'port-used' : 'port-unused'}} ${{portData.is_sfp ? 'sfp-port' : ''}}`;
                 usagePort.textContent = portData.port;
                 usageLayout.appendChild(usagePort);
 
+                // VLAN layout
                 const vlanPort = document.createElement('div');
-                const vlanClass = portData.vlan ? `vlan-${{portData.vlan}}` : 'vlan-unknown';
+                let vlanClass = 'vlan-unknown';
+
+                // If there are multiple VLANs, show 'H' for hybrid
+                if (portData.vlans.length > 1) {{
+                    vlanClass = 'multiple-vlans'; // For the hybrid port styling
+                }} else if (portData.vlans.length === 1) {{
+                    vlanClass = `vlan-${{portData.vlans[0]}}`;
+                }}
+
                 vlanPort.className = `port ${{vlanClass}} ${{portData.is_sfp ? 'sfp-port' : ''}}`;
                 vlanPort.textContent = portData.port;
 
-                if (portData.device && portData.mac) {{
+                // Add VLAN numbers or 'H' (for Hybrid) if necessary
+                if (portData.vlans.length > 0) {{
+                    const vlanText = document.createElement('span');
+                    vlanText.className = 'vlan-text';
+                    vlanText.textContent = portData.vlans.length > 1 ? 'H' : portData.vlans[0];
+                    vlanPort.appendChild(vlanText);
+                }}
+
+                // Add tooltip for device information
+                if (portData.devices.length > 0) {{
                     const tooltip = document.createElement('div');
                     tooltip.className = 'tooltip';
-                    tooltip.textContent = `Device: ${{portData.device}}\\nMAC: ${{portData.mac}}`;
+                    tooltip.textContent = portData.devices.map(d =>
+                        `Device: ${{d.device}}\\nVLAN: ${{d.vlan}}\\nMAC: ${{d.mac}}`
+                    ).join('\\n\\n');
                     vlanPort.appendChild(tooltip);
                 }}
 
@@ -181,20 +218,36 @@ html_template = """<!DOCTYPE html>
 </html>
 """
 
-
 def read_existing_html(file_path):
-    """Read the switchData JSON from an existing HTML file."""
+    """Read the switchData JSON from an existing HTML file and convert to new format if needed."""
     try:
         with open(file_path, 'r') as f:
             content = f.read()
             # Extract JSON from the script tag
             match = re.search(r'const switchData = (\{[\s\S]*?\});', content)
             if match:
-                return json.loads(match.group(1))
+                data = json.loads(match.group(1))
+                # Convert old format to new format if necessary
+                for port in data.get("ports", []):
+                    if "vlan" in port or "device" in port or "mac" in port:
+                        # Old format detected, convert to new format
+                        vlan = port.get("vlan")
+                        device = port.get("device")
+                        mac = port.get("mac")
+                        port["vlans"] = [vlan] if vlan else []
+                        port["devices"] = [{
+                            "vlan": vlan,
+                            "device": device,
+                            "mac": mac
+                        }] if device or mac else []
+                        # Remove old keys
+                        port.pop("vlan", None)
+                        port.pop("device", None)
+                        port.pop("mac", None)
+                return data
     except (FileNotFoundError, json.JSONDecodeError, re.error):
         return None
     return None
-
 
 def generate_switch_html(device_data, switch_info):
     # Group devices by switch IP
@@ -208,41 +261,49 @@ def generate_switch_html(device_data, switch_info):
         file_path = f"C:\\{switch_ip}\\{switch_ip}.html"
         existing_data = read_existing_html(file_path) or {
             "switch_ip": switch_ip,
-            "ports": [{"port": i, "used": False, "vlan": None, "device": None, "mac": None, "is_sfp": i > 48} for i in
-                      range(1, 53)]
+            "ports": [{"port": i, "used": False, "vlans": [], "devices": [], "is_sfp": i > 48} for i in range(1, 53)]
         }
 
         # Create new ports data
         new_ports = existing_data["ports"].copy()  # Start with existing ports
         needs_update = False
 
-        # Update ports based on device_data
+        # Group devices by port
+        port_devices = {}
         for device in switch_devices:
             port_num = device[3]
             if port_num < 1 or port_num > 52:
                 continue  # Skip invalid ports
+            if port_num not in port_devices:
+                port_devices[port_num] = []
+            port_devices[port_num].append({
+                "vlan": device[2] if device[2] else None,
+                "device": device[5] if device[5] else None,
+                "mac": device[1] if device[1] else None
+            })
+
+        # Update ports based on device_data
+        for port_num, devices in port_devices.items():
             port_idx = port_num - 1  # 0-based index for list
             new_port_data = {
                 "port": port_num,
-                "used": bool(device[5] or device[0] != "0.0.0.0"),
-                "vlan": device[2] if device[2] else None,
-                "device": device[5] if device[5] else None,
-                "mac": device[1] if device[1] else None,
+                "used": bool(devices),
+                "vlans": [d["vlan"] for d in devices if d["vlan"]],
+                "devices": devices,
                 "is_sfp": port_num > 48
             }
 
             # Compare with existing port data
             existing_port = new_ports[port_idx]
             if (existing_port["used"] != new_port_data["used"] or
-                    existing_port["vlan"] != new_port_data["vlan"] or
-                    existing_port["device"] != new_port_data["device"] or
-                    existing_port["mac"] != new_port_data["mac"]):
+                    existing_port["vlans"] != new_port_data["vlans"] or
+                    existing_port["devices"] != new_port_data["devices"]):
                 new_ports[port_idx] = new_port_data
                 needs_update = True
 
         # Get additional info for this switch
         additional_info = next((info[1] for info in switch_info if info[0] == switch_ip),
-                               "No additional information available.")
+                             "No additional information available.")
 
         # Only write file if there's an update
         if needs_update:
@@ -269,7 +330,6 @@ def generate_switch_html(device_data, switch_info):
             print(f"Updated HTML file for switch {switch_ip} at {file_path}")
         else:
             print(f"No updates needed for switch {switch_ip}")
-
 
 # Run the function
 generate_switch_html(device_data, switch_info)
