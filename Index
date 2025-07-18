@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Network Device Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        function refreshPage() {
+            window.location.reload();
+        }
+        setInterval(() => {
+            fetch('/get_notifications')
+                .then(response => response.json())
+                .then(data => {
+                    const notificationDiv = document.getElementById('notifications');
+                    notificationDiv.innerHTML = '';
+                    data.forEach(note => {
+                        const div = document.createElement('div');
+                        div.className = 'bg-blue-500 text-white p-2 mb-2 rounded';
+                        div.textContent = note;
+                        notificationDiv.appendChild(div);
+                    });
+                });
+        }, 5000);
+        function openNameModal(ip, currentName) {
+            document.getElementById('nameModalIp').value = ip;
+            document.getElementById('nameInput').value = currentName || '';
+            document.getElementById('nameModal').classList.remove('hidden');
+        }
+        function closeNameModal() {
+            document.getElementById('nameModal').classList.add('hidden');
+        }
+        function saveName() {
+            const ip = document.getElementById('nameModalIp').value;
+            const name = document.getElementById('nameInput').value;
+            fetch('/set_name', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: `ip=${encodeURIComponent(ip)}&name=${encodeURIComponent(name)}`
+            }).then(response => response.json()).then(data => {
+                if (data.status === 'success') {
+                    closeNameModal();
+                    refreshPage();
+                }
+            });
+        }
+    </script>
+</head>
+<body class="bg-gray-100">
+    <div class="container mx-auto p-4">
+        <h1 class="text-2xl font-bold mb-4">Network Device Dashboard</h1>
+        <div class="mb-4">
+            <canvas id="activityChart" class="w-full h-64"></canvas>
+        </div>
+        <div class="mb-4 flex space-x-4">
+            <input id="ipFilter" type="text" placeholder="Filter by IP" class="p-2 border rounded">
+            <input id="rangeFilter" type="text" placeholder="Filter by IP range (e.g., 192.168.1)" class="p-2 border rounded">
+            <select id="statusFilter" class="p-2 border rounded">
+                <option value="">All Statuses</option>
+                <option value="online">Online</option>
+                <option value="offline">Offline</option>
+            </select>
+            <button onclick="refreshPage()" class="bg-blue-500 text-white p-2 rounded">Refresh Now</button>
+            <a href="/export_csv" class="bg-green-500 text-white p-2 rounded">Export to CSV</a>
+        </div>
+        <div id="notifications" class="fixed bottom-4 right-4 max-w-xs"></div>
+        <table class="w-full bg-white shadow-md rounded">
+            <thead>
+                <tr class="bg-gray-200">
+                    <th class="p-2">IP Address</th>
+                    <th class="p-2">Name</th>
+                    <th class="p-2">Status</th>
+                    <th class="p-2">Last Seen</th>
+                    <th class="p-2">Online Duration</th>
+                </tr>
+            </thead>
+            <tbody id="deviceTable">
+                {% for ip, status, last_seen, duration, name in devices %}
+                <tr class="device-row" data-ip="{{ ip }}" data-status="{{ status }}">
+                    <td class="p-2"><a href="{{ url_for('history', ip=ip) }}" target="_blank" class="text-blue-500">{{ ip }}</a></td>
+                    <td class="p-2"><span onclick="openNameModal('{{ ip }}', '{{ name or '' }}')" class="cursor-pointer text-blue-500">{{ name or 'Set Name' }}</span></td>
+                    <td class="p-2">{{ status }}</td>
+                    <td class="p-2">{{ last_seen or '' }}</td>
+                    <td class="p-2">{{ duration or '' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        <!-- Name Modal -->
+        <div id="nameModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden">
+            <div class="bg-white p-6 rounded shadow-lg">
+                <h2 class="text-xl mb-4">Set Device Name</h2>
+                <input type="hidden" id="nameModalIp">
+                <input id="nameInput" type="text" placeholder="Enter device name" class="p-2 border rounded w-full mb-4">
+                <div class="flex space-x-4">
+                    <button onclick="saveName()" class="bg-blue-500 text-white p-2 rounded">Save</button>
+                    <button onclick="closeNameModal()" class="bg-gray-500 text-white p-2 rounded">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script>
+        const ipFilter = document.getElementById('ipFilter');
+        const rangeFilter = document.getElementById('rangeFilter');
+        const statusFilter = document.getElementById('statusFilter');
+        const deviceRows = document.querySelectorAll('.device-row');
+
+        function filterDevices() {
+            const ipValue = ipFilter.value.toLowerCase();
+            const rangeValue = rangeFilter.value.toLowerCase();
+            const statusValue = statusFilter.value.toLowerCase();
+
+            deviceRows.forEach(row => {
+                const ip = row.dataset.ip.toLowerCase();
+                const status = row.dataset.status.toLowerCase();
+                const ipMatch = ip.includes(ipValue);
+                const rangeMatch = rangeValue ? ip.startsWith(rangeValue) : true;
+                const statusMatch = statusValue ? status === statusValue : true;
+                row.style.display = (ipMatch && rangeMatch && statusMatch) ? '' : 'none';
+            });
+        }
+
+        ipFilter.addEventListener('input', filterDevices);
+        rangeFilter.addEventListener('input', filterDevices);
+        statusFilter.addEventListener('change', filterDevices);
+
+        // Chart initialization
+        const ctx = document.getElementById('activityChart').getContext('2d');
+        new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: {{ chart_labels | safe }},
+                datasets: {{ chart_datasets | safe }}
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        title: { display: true, text: 'Online Devices' }
+                    },
+                    x: {
+                        title: { display: true, text: 'Time' }
+                    }
+                }
+            }
+        });
+
+        setTimeout(refreshPage, 30000);
+    </script>
+</body>
+</html>
