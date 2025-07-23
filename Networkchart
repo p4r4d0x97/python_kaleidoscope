@@ -15,6 +15,14 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret!'
 socketio = SocketIO(app, async_mode='threading')
 
+# VLAN configuration
+vlans = [
+    {'id': 10, 'network': '192.168.1.0/24'},
+    {'id': 20, 'network': '192.168.2.0/24'},
+    {'id': 30, 'network': '192.168.3.0/24'},
+    {'id': 40, 'network': '192.168.4.0/24'}
+]
+
 # Database setup
 def init_db():
     with sqlite3.connect('network.db') as conn:
@@ -24,15 +32,14 @@ def init_db():
         c.execute('''CREATE TABLE IF NOT EXISTS history
                      (ip TEXT, start_time REAL, end_time REAL, duration REAL,
                       FOREIGN KEY(ip) REFERENCES devices(ip))''')
+        # Populate devices table with IPs from VLANs
+        for vlan in vlans:
+            network = ipaddress.ip_network(vlan['network'])
+            for ip in network.hosts():
+                ip_str = str(ip)
+                c.execute('INSERT OR IGNORE INTO devices (ip, vlan, status, last_seen, first_seen) VALUES (?, ?, ?, ?, ?)',
+                         (ip_str, vlan['id'], 'No data', 0, 0))
         conn.commit()
-
-# VLAN configuration
-vlans = [
-    {'id': 10, 'network': '192.168.1.0/24'},
-    {'id': 20, 'network': '192.168.2.0/24'},
-    {'id': 30, 'network': '192.168.3.0/24'},
-    {'id': 40, 'network': '192.168.4.0/24'}
-]
 
 # Thread-safe data storage
 devices = defaultdict(lambda: {'status': 'No data', 'last_seen': 0, 'first_seen': 0})
@@ -69,7 +76,7 @@ def update_device_status(ip, vlan, is_online):
                     c.execute('INSERT INTO history (ip, start_time) VALUES (?, ?)', (ip, now))
                     if not request.args.get('ip') or request.args.get('ip') == ip or \
                        not request.args.get('vlan') or str(request.args.get('vlan')) == str(vlan):
-                        notifications.append({'ip': ip, 'status': 'Online', 'time': now})
+                        notifications.append({'ip': ip, 'status': 'Online', 'time': datetime.fromtimestamp(now).strftime('%Y-%m-%d %H:%M:%S')})
                         if len(notifications) > 5:
                             notifications.pop(0)
                         socketio.emit('notification', {'ip': ip, 'status': 'Online', 'time': datetime.fromtimestamp(now).strftime('%Y-%m-%d %H:%M:%S')})
@@ -80,7 +87,7 @@ def update_device_status(ip, vlan, is_online):
                     c.execute('INSERT INTO history (ip, start_time) VALUES (?, ?)', (ip, now))
                     if not request.args.get('ip') or request.args.get('ip') == ip or \
                        not request.args.get('vlan') or str(request.args.get('vlan')) == str(vlan):
-                        notifications.append({'ip': ip, 'status': 'Online', 'time': now})
+                        notifications.append({'ip': ip, 'status': 'Online', 'time': datetime.fromtimestamp(now).strftime('%Y-%m-%d %H:%M:%S')})
                         if len(notifications) > 5:
                             notifications.pop(0)
                         socketio.emit('notification', {'ip': ip, 'status': 'Online', 'time': datetime.fromtimestamp(now).strftime('%Y-%m-%d %H:%M:%S')})
@@ -95,7 +102,7 @@ def update_device_status(ip, vlan, is_online):
                              (now, now - result[1], ip))
                     if not request.args.get('ip') or request.args.get('ip') == ip or \
                        not request.args.get('vlan') or str(request.args.get('vlan')) == str(vlan):
-                        notifications.append({'ip': ip, 'status': 'Offline', 'time': now})
+                        notifications.append({'ip': ip, 'status': 'Offline', 'time': datetime.fromtimestamp(now).strftime('%Y-%m-%d %H:%M:%S')})
                         if len(notifications) > 5:
                             notifications.pop(0)
                         socketio.emit('notification', {'ip': ip, 'status': 'Offline', 'time': datetime.fromtimestamp(now).strftime('%Y-%m-%d %H:%M:%S')})
@@ -118,7 +125,7 @@ async def ping_vlans():
                     tasks.append(ping_host(str(ip)))
                 results = await asyncio.gather(*tasks)
                 for ip, result in zip(network.hosts(), results):
-                    await update_device_status(str(ip), vlan['id'], result)
+                    update_device_status(str(ip), vlan['id'], result)
             socketio.emit('update', dict(devices))
             await asyncio.sleep(5)
         await asyncio.sleep(30)  # Wait before next full cycle
