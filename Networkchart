@@ -178,12 +178,18 @@ def index():
                 'status_text': status_text
             })
         
-        # Calculate pages without using max in template context
         pages = (total + per_page - 1) // per_page if total > 0 else 1
+        # Calculate pagination range in Python
+        page_range_start = 1 if page <= 3 else page - 2
+        page_range_end = pages + 1 if page > pages - 2 else page + 3
+        if page_range_end > pages + 1:
+            page_range_end = pages + 1
+        page_range = range(page_range_start, page_range_end)
+        
         return render_template('index.html', devices=devices_data, page=page, pages=pages,
                              ip_filter=ip_filter, vlan_filter=vlan_filter, status_filter=status_filter,
                              per_page=per_page, refresh_rate=refresh_rate, notifications=notifications, 
-                             vlans=vlans)
+                             vlans=vlans, page_range=page_range)
 
 @app.route('/history/<ip>')
 def history(ip):
