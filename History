@@ -7,7 +7,7 @@
 <body>
     <div class="container mt-4">
         <h1>History for {{ ip }}</h1>
-        <a href="{{ url_for('index') }}" class="btn btn-secondary mb-3">Back to Dashboard</a>
+        <a href="{{ url_for('index', ip=ip_filter, vlan=vlan_filter, status=status_filter, page=page, per_page=per_page, refresh=refresh_rate) }}" class="btn btn-secondary mb-3">Back to Dashboard</a>
         <table class="table table-striped">
             <thead>
                 <tr>
