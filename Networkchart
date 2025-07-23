@@ -178,7 +178,8 @@ def index():
                 'status_text': status_text
             })
         
-        pages = max(1, (total + per_page - 1) // per_page)
+        # Calculate pages without using max in template context
+        pages = (total + per_page - 1) // per_page if total > 0 else 1
         return render_template('index.html', devices=devices_data, page=page, pages=pages,
                              ip_filter=ip_filter, vlan_filter=vlan_filter, status_filter=status_filter,
                              per_page=per_page, refresh_rate=refresh_rate, notifications=notifications, 
@@ -197,7 +198,13 @@ def history(ip):
                 'end': datetime.fromtimestamp(end_time).strftime('%Y-%m-%d %H:%M:%S') if end_time else 'Ongoing',
                 'duration': f"{int(duration // 60)}m {int(duration % 60)}s" if duration else 'Ongoing'
             })
-        return render_template('history.html', ip=ip, sessions=sessions)
+        return render_template('history.html', ip=ip, sessions=sessions,
+                             ip_filter=request.args.get('ip', ''),
+                             vlan_filter=request.args.get('vlan', ''),
+                             status_filter=request.args.get('status', ''),
+                             page=request.args.get('page', 1),
+                             per_page=request.args.get('per_page', 10),
+                             refresh_rate=request.args.get('refresh', 30))
 
 # Start async loop
 if platform.system() == "Emscripten":
