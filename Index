@@ -1,154 +1,132 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Network Device Dashboard</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script>
-        function refreshPage() {
-            window.location.reload();
+    <title>Network Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/socket.io@4.5.0/dist/socket.io.min.js"></script>
+    <style>
+        .notification-container {
+            position: fixed;
+            bottom: 10px;
+            left: 10px;
+            width: 300px;
         }
-        setInterval(() => {
-            fetch('/get_notifications')
-                .then(response => response.json())
-                .then(data => {
-                    const notificationDiv = document.getElementById('notifications');
-                    notificationDiv.innerHTML = '';
-                    data.forEach(note => {
-                        const div = document.createElement('div');
-                        div.className = 'bg-blue-500 text-white p-2 mb-2 rounded';
-                        div.textContent = note;
-                        notificationDiv.appendChild(div);
-                    });
-                });
-        }, 5000);
-        function openNameModal(ip, currentName) {
-            document.getElementById('nameModalIp').value = ip;
-            document.getElementById('nameInput').value = currentName || '';
-            document.getElementById('nameModal').classList.remove('hidden');
+        .notification {
+            background-color: #f8f9fa;
+            padding: 10px;
+            margin-bottom: 5px;
+            border-radius: 5px;
+            border: 1px solid #ddd;
         }
-        function closeNameModal() {
-            document.getElementById('nameModal').classList.add('hidden');
-        }
-        function saveName() {
-            const ip = document.getElementById('nameModalIp').value;
-            const name = document.getElementById('nameInput').value;
-            fetch('/set_name', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: `ip=${encodeURIComponent(ip)}&name=${encodeURIComponent(name)}`
-            }).then(response => response.json()).then(data => {
-                if (data.status === 'success') {
-                    closeNameModal();
-                    refreshPage();
-                }
-            });
-        }
-    </script>
+        .online { background-color: #d4edda; }
+        .offline { background-color: #f8d7da; }
+    </style>
 </head>
-<body class="bg-gray-100">
-    <div class="container mx-auto p-4">
-        <h1 class="text-2xl font-bold mb-4">Network Device Dashboard</h1>
-        <div class="mb-4">
-            <canvas id="activityChart" class="w-full h-64"></canvas>
-        </div>
-        <div class="mb-4 flex space-x-4">
-            <input id="ipFilter" type="text" placeholder="Filter by IP" class="p-2 border rounded">
-            <input id="rangeFilter" type="text" placeholder="Filter by IP range (e.g., 192.168.1)" class="p-2 border rounded">
-            <select id="statusFilter" class="p-2 border rounded">
-                <option value="">All Statuses</option>
-                <option value="online">Online</option>
-                <option value="offline">Offline</option>
-            </select>
-            <button onclick="refreshPage()" class="bg-blue-500 text-white p-2 rounded">Refresh Now</button>
-            <a href="/export_csv" class="bg-green-500 text-white p-2 rounded">Export to CSV</a>
-        </div>
-        <div id="notifications" class="fixed bottom-4 right-4 max-w-xs"></div>
-        <table class="w-full bg-white shadow-md rounded">
+<body>
+    <div class="container mt-4">
+        <h1>Network Dashboard</h1>
+        <form id="filterForm" class="mb-3">
+            <div class="row">
+                <div class="col-md-3">
+                    <input type="text" name="ip" class="form-control" placeholder="IP Filter" value="{{ ip_filter }}">
+                </div>
+                <div class="col-md-3">
+                    <select name="vlan" class="form-control">
+                        <option value="">All VLANs</option>
+                        {% for vlan in vlans %}
+                            <option value="{{ vlan.id }}" {% if vlan_filter == vlan.id|string %}selected{% endif %}>VLAN {{ vlan.id }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <input type="number" name="refresh" class="form-control" placeholder="Refresh (s)" value="{{ refresh_rate }}">
+                </div>
+                <div class="col-md-2">
+                    <button type="submit" class="btn btn-primary">Apply</button>
+                </div>
+            </div>
+        </form>
+
+        <table class="table table-striped">
             <thead>
-                <tr class="bg-gray-200">
-                    <th class="p-2">IP Address</th>
-                    <th class="p-2">Name</th>
-                    <th class="p-2">Status</th>
-                    <th class="p-2">Last Seen</th>
-                    <th class="p-2">Online Duration</th>
+                <tr>
+                    <th>IP Address</th>
+                    <th>VLAN</th>
+                    <th>Status</th>
                 </tr>
             </thead>
             <tbody id="deviceTable">
-                {% for ip, status, last_seen, duration, name in devices %}
-                <tr class="device-row" data-ip="{{ ip }}" data-status="{{ status }}">
-                    <td class="p-2"><a href="{{ url_for('history', ip=ip) }}" target="_blank" class="text-blue-500">{{ ip }}</a></td>
-                    <td class="p-2"><span onclick="openNameModal('{{ ip }}', '{{ name or '' }}')" class="cursor-pointer text-blue-500">{{ name or 'Set Name' }}</span></td>
-                    <td class="p-2">{{ status }}</td>
-                    <td class="p-2">{{ last_seen or '' }}</td>
-                    <td class="p-2">{{ duration or '' }}</td>
+                {% for device in devices %}
+                <tr>
+                    <td><a href="{{ url_for('history', ip=device.ip) }}" target="_blank">{{ device.ip }}</a></td>
+                    <td>{{ device.vlan }}</td>
+                    <td>{{ device.status_text }}</td>
                 </tr>
                 {% endfor %}
             </tbody>
         </table>
-        <!-- Name Modal -->
-        <div id="nameModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden">
-            <div class="bg-white p-6 rounded shadow-lg">
-                <h2 class="text-xl mb-4">Set Device Name</h2>
-                <input type="hidden" id="nameModalIp">
-                <input id="nameInput" type="text" placeholder="Enter device name" class="p-2 border rounded w-full mb-4">
-                <div class="flex space-x-4">
-                    <button onclick="saveName()" class="bg-blue-500 text-white p-2 rounded">Save</button>
-                    <button onclick="closeNameModal()" class="bg-gray-500 text-white p-2 rounded">Cancel</button>
+
+        <nav>
+            <ul class="pagination">
+                {% for p in range(1, pages + 1) %}
+                    <li class="page-item {% if p == page %}active{% endif %}">
+                        <a class="page-link" href="{{ url_for('index', page=p, ip=ip_filter, vlan=vlan_filter, refresh=refresh_rate) }}">{{ p }}</a>
+                    </li>
+                {% endfor %}
+            </ul>
+        </nav>
+
+        <div class="notification-container">
+            {% for notification in notifications %}
+                <div class="notification {% if notification.status == 'Online' %}online{% else %}offline{% endif %}">
+                    {{ notification.ip }} is {{ notification.status }} at {{ notification.time|datetimeformat }}
                 </div>
-            </div>
+            {% endfor %}
         </div>
     </div>
+
     <script>
-        const ipFilter = document.getElementById('ipFilter');
-        const rangeFilter = document.getElementById('rangeFilter');
-        const statusFilter = document.getElementById('statusFilter');
-        const deviceRows = document.querySelectorAll('.device-row');
-
-        function filterDevices() {
-            const ipValue = ipFilter.value.toLowerCase();
-            const rangeValue = rangeFilter.value.toLowerCase();
-            const statusValue = statusFilter.value.toLowerCase();
-
-            deviceRows.forEach(row => {
-                const ip = row.dataset.ip.toLowerCase();
-                const status = row.dataset.status.toLowerCase();
-                const ipMatch = ip.includes(ipValue);
-                const rangeMatch = rangeValue ? ip.startsWith(rangeValue) : true;
-                const statusMatch = statusValue ? status === statusValue : true;
-                row.style.display = (ipMatch && rangeMatch && statusMatch) ? '' : 'none';
-            });
-        }
-
-        ipFilter.addEventListener('input', filterDevices);
-        rangeFilter.addEventListener('input', filterDevices);
-        statusFilter.addEventListener('change', filterDevices);
-
-        // Chart initialization
-        const ctx = document.getElementById('activityChart').getContext('2d');
-        new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels: {{ chart_labels | safe }},
-                datasets: {{ chart_datasets | safe }}
-            },
-            options: {
-                responsive: true,
-                scales: {
-                    y: {
-                        beginAtZero: true,
-                        title: { display: true, text: 'Online Devices' }
-                    },
-                    x: {
-                        title: { display: true, text: 'Time' }
-                    }
+        const socket = io();
+        socket.on('update', function(data) {
+            const tbody = document.getElementById('deviceTable');
+            tbody.innerHTML = '';
+            Object.keys(data).forEach(ip => {
+                const device = data[ip];
+                const row = document.createElement('tr');
+                const now = Date.now() / 1000;
+                let statusText = '';
+                if (device.status === 'Online') {
+                    const uptime = now - device.first_seen;
+                    statusText = `Online for ${Math.floor(uptime / 60)}m ${Math.floor(uptime % 60)}s`;
+                } else if (device.status === 'Offline' && device.last_seen) {
+                    const downtime = now - device.last_seen;
+                    statusText = `Last seen ${Math.floor(downtime / 60)}m ago`;
+                } else {
+                    statusText = 'No data';
                 }
+                row.innerHTML = `
+                    <td><a href="/history/${ip}" target="_blank">${ip}</a></td>
+                    <td>${device.vlan}</td>
+                    <td>${statusText}</td>
+                `;
+                tbody.appendChild(row);
+            });
+        });
+
+        socket.on('notification', function(data) {
+            const container = document.querySelector('.notification-container');
+            const div = document.createElement('div');
+            div.className = `notification ${data.status.toLowerCase()}`;
+            div.textContent = `${data.ip} is ${data.status} at ${data.time}`;
+            container.insertBefore(div, container.firstChild);
+            if (container.children.length > 5) {
+                container.removeChild(container.lastChild);
             }
         });
 
-        setTimeout(refreshPage, 30000);
+        const refreshRate = {{ refresh_rate }} * 1000;
+        setTimeout(() => location.reload(), refreshRate);
     </script>
 </body>
 </html>
