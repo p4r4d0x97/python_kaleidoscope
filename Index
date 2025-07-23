@@ -40,7 +40,7 @@
                     </select>
                 </div>
                 <div class="col-md-2">
-                    <input type="number" name="refresh" class="form-control" placeholder="Refresh (s)" value="{{ refresh_rate }}">
+                    <input type="number" name="refresh" id="refreshInput" class="form-control" placeholder="Refresh (s)" value="{{ refresh_rate }}">
                 </div>
                 <div class="col-md-2">
                     <button type="submit" class="btn btn-primary">Apply</button>
@@ -125,8 +125,19 @@
             }
         });
 
-        const refreshRate = {{ refresh_rate }} * 1000;
-        setTimeout(() => location.reload(), refreshRate);
+        // Refresh page based on user input
+        const refreshInput = document.getElementById('refreshInput');
+        let refreshRate = {{ refresh_rate }} * 1000;
+        function startRefresh() {
+            clearTimeout(window.refreshTimeout);
+            window.refreshTimeout = setTimeout(() => {
+                const url = new URL(window.location);
+                url.searchParams.set('refresh', refreshInput.value);
+                window.location = url.toString();
+            }, refreshInput.value * 1000);
+        }
+        startRefresh();
+        refreshInput.addEventListener('change', startRefresh);
     </script>
 </body>
 </html>
