@@ -1,206 +1,202 @@
 import asyncio
-import sqlite3
+import platform
+import subprocess
 import ipaddress
 import time
 from datetime import datetime, timedelta
-from flask import Flask, render_template, jsonify, request, redirect, url_for
-import aioping
-import threading
-import csv
-from io import StringIO
-from collections import defaultdict
+from flask import Flask, render_template, request, jsonify
+from flask_socketio import SocketIO
+import sqlite3
+from threading import Lock
 import json
+from collections import defaultdict
 
 app = Flask(__name__)
+app.config['SECRET_KEY'] = 'secret!'
+socketio = SocketIO(app, async_mode='threading')
+
+# Database setup
+def init_db():
+    with sqlite3.connect('network.db') as conn:
+        c = conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS devices
+                     (ip TEXT PRIMARY KEY, vlan INTEGER, status TEXT, last_seen REAL, first_seen REAL)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS history
+                     (ip TEXT, start_time REAL, end_time REAL, duration REAL,
+                      FOREIGN KEY(ip) REFERENCES devices(ip))''')
+        conn.commit()
 
 # VLAN configuration
-VLANS = [
-    {"id": 10, "network": "192.168.1.1/21"},
-    {"id": 20, "network": "192.168.3.1/24"},
-    # Add more VLANs here as needed
+vlans = [
+    {'id': 10, 'network': '192.168.1.0/24'},
+    {'id': 20, 'network': '192.168.2.0/24'},
+    {'id': 30, 'network': '192.168.3.0/24'},
+    {'id': 40, 'network': '192.168.4.0/24'}
 ]
 
-# In-memory store for chart data (last 10 minutes)
-CHART_DATA = defaultdict(list)  # {vlan_id: [(timestamp, online_count), ...]}
-CHART_RETENTION = 600  # 10 minutes in seconds
+# Thread-safe data storage
+devices = defaultdict(lambda: {'status': 'No data', 'last_seen': 0, 'first_seen': 0})
+notifications = []
+lock = Lock()
 
-# Database initialization
-def init_db():
-    conn = sqlite3.connect('devices.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS device_status
-                 (ip TEXT PRIMARY KEY, status TEXT, last_seen REAL, online_since REAL, name TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS session_history
-                 (ip TEXT, start_time REAL, end_time REAL, duration REAL)''')
-    conn.commit()
-    conn.close()
-
-# Helper to get all IPs in a network
-def get_ips_in_network(network):
-    return [str(ip) for ip in ipaddress.IPv4Network(network, strict=False)]
-
-# Async ping function
-async def ping_ip(ip):
+# Ping function
+async def ping_host(ip):
+    param = '-n' if platform.system().lower() == 'windows' else '-c'
+    cmd = ['ping', param, '1', str(ip)]
     try:
-        await asyncio.wait_for(aioping.ping(ip, timeout=1), timeout=1)
-        return True
-    except:
+        output = await asyncio.create_subprocess_exec(
+            *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        await output.communicate()
+        return output.returncode == 0
+    except Exception:
         return False
 
-# Update device status and chart data
-async def update_vlan_status(vlan):
-    conn = sqlite3.connect('devices.db')
-    c = conn.cursor()
-    ips = get_ips_in_network(vlan["network"])
-    tasks = [ping_ip(ip) for ip in ips]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    
-    current_time = time.time()
-    online_count = sum(1 for result in results if result is True)
-    
-    # Update chart data
-    CHART_DATA[vlan["id"]].append((current_time, online_count))
-    # Prune old data (older than 10 minutes)
-    CHART_DATA[vlan["id"]] = [(t, c) for t, c in CHART_DATA[vlan["id"]] if current_time - t <= CHART_RETENTION]
-    
-    for ip, result in zip(ips, results):
-        c.execute("SELECT status, online_since, name FROM device_status WHERE ip=?", (ip,))
-        row = c.fetchone()
-        new_status = "online" if result is True else "offline"
-        
-        if row:
-            old_status, online_since, name = row
-            if new_status != old_status:
-                c.execute("UPDATE device_status SET status=?, last_seen=?, online_since=? WHERE ip=?",
-                         (new_status, current_time if new_status == "offline" else None,
-                          current_time if new_status == "online" else online_since, ip))
-                if new_status == "online":
-                    app.config['NOTIFICATIONS'].append(f"Device {name or ip} went online")
-                else:
-                    duration = current_time - online_since if online_since else 0
-                    c.execute("INSERT INTO session_history (ip, start_time, end_time, duration) VALUES (?, ?, ?, ?)",
-                             (ip, online_since, current_time, duration))
-                    app.config['NOTIFICATIONS'].append(f"Device {name or ip} went offline")
-        else:
-            c.execute("INSERT INTO device_status (ip, status, last_seen, online_since, name) VALUES (?, ?, ?, ?, ?)",
-                     (ip, new_status, current_time if new_status == "offline" else None,
-                      current_time if new_status == "online" else None, None))
-            app.config['NOTIFICATIONS'].append(f"Device {ip} went {new_status}")
-    
-    conn.commit()
-    conn.close()
+# Update device status
+def update_device_status(ip, vlan, is_online):
+    with lock:
+        now = time.time()
+        with sqlite3.connect('network.db') as conn:
+            c = conn.cursor()
+            c.execute('SELECT status, first_seen FROM devices WHERE ip = ?', (ip,))
+            result = c.fetchone()
+            
+            if is_online:
+                if result and result[0] == 'Offline':
+                    # Device came online
+                    c.execute('UPDATE devices SET status = ?, last_seen = ?, first_seen = ? WHERE ip = ?',
+                             ('Online', now, now, ip))
+                    c.execute('INSERT INTO history (ip, start_time) VALUES (?, ?)', (ip, now))
+                    if not request.args.get('ip') or request.args.get('ip') == ip or \
+                       not request.args.get('vlan') or str(request.args.get('vlan')) == str(vlan):
+                        notifications.append({'ip': ip, 'status': 'Online', 'time': now})
+                        if len(notifications) > 5:
+                            notifications.pop(0)
+                        socketio.emit('notification', {'ip': ip, 'status': 'Online', 'time': datetime.fromtimestamp(now).strftime('%Y-%m-%d %H:%M:%S')})
+                elif not result:
+                    # New device
+                    c.execute('INSERT INTO devices (ip, vlan, status, last_seen, first_seen) VALUES (?, ?, ?, ?, ?)',
+                             (ip, vlan, 'Online', now, now))
+                    c.execute('INSERT INTO history (ip, start_time) VALUES (?, ?)', (ip, now))
+                    if not request.args.get('ip') or request.args.get('ip') == ip or \
+                       not request.args.get('vlan') or str(request.args.get('vlan')) == str(vlan):
+                        notifications.append({'ip': ip, 'status': 'Online', 'time': now})
+                        if len(notifications) > 5:
+                            notifications.pop(0)
+                        socketio.emit('notification', {'ip': ip, 'status': 'Online', 'time': datetime.fromtimestamp(now).strftime('%Y-%m-%d %H:%M:%S')})
+                devices[ip]['status'] = 'Online'
+                devices[ip]['first_seen'] = result[1] if result else now
+            else:
+                if result and result[0] == 'Online':
+                    # Device went offline
+                    c.execute('UPDATE devices SET status = ?, last_seen = ? WHERE ip = ?',
+                             ('Offline', now, ip))
+                    c.execute('UPDATE history SET end_time = ?, duration = ? WHERE ip = ? AND end_time IS NULL',
+                             (now, now - result[1], ip))
+                    if not request.args.get('ip') or request.args.get('ip') == ip or \
+                       not request.args.get('vlan') or str(request.args.get('vlan')) == str(vlan):
+                        notifications.append({'ip': ip, 'status': 'Offline', 'time': now})
+                        if len(notifications) > 5:
+                            notifications.pop(0)
+                        socketio.emit('notification', {'ip': ip, 'status': 'Offline', 'time': datetime.fromtimestamp(now).strftime('%Y-%m-%d %H:%M:%S')})
+                elif not result:
+                    c.execute('INSERT INTO devices (ip, vlan, status, last_seen) VALUES (?, ?, ?, ?)',
+                             (ip, vlan, 'Offline', now))
+                devices[ip]['status'] = 'Offline'
+                devices[ip]['last_seen'] = now
+            devices[ip]['vlan'] = vlan
+            conn.commit()
 
-# Background task to ping VLANs
-def background_task():
-    async def ping_vlans():
-        while True:
-            for i in range(0, len(VLANS), 2):
-                vlan_group = VLANS[i:i+2]
-                for vlan in vlan_group:
-                    await update_vlan_status(vlan)
-                await asyncio.sleep(10)  # Wait 10 seconds between VLAN groups
-    
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(ping_vlans())
+# Async ping loop
+async def ping_vlans():
+    while True:
+        for i in range(0, len(vlans), 2):
+            tasks = []
+            for vlan in vlans[i:i+2]:
+                network = ipaddress.ip_network(vlan['network'])
+                for ip in network.hosts():
+                    tasks.append(ping_host(str(ip)))
+                results = await asyncio.gather(*tasks)
+                for ip, result in zip(network.hosts(), results):
+                    await update_device_status(str(ip), vlan['id'], result)
+            socketio.emit('update', dict(devices))
+            await asyncio.sleep(5)
+        await asyncio.sleep(30)  # Wait before next full cycle
 
 # Flask routes
 @app.route('/')
 def index():
-    conn = sqlite3.connect('devices.db')
-    c = conn.cursor()
-    c.execute("SELECT ip, status, last_seen, online_since, name FROM device_status")
-    devices = c.fetchall()
-    conn.close()
+    page = int(request.args.get('page', 1))
+    per_page = 10
+    ip_filter = request.args.get('ip', '')
+    vlan_filter = request.args.get('vlan', '')
+    refresh_rate = int(request.args.get('refresh', 30))
     
-    current_time = time.time()
-    formatted_devices = []
-    for ip, status, last_seen, online_since, name in devices:
-        if status == "online" and online_since:
-            duration = timedelta(seconds=int(current_time - online_since))
-        else:
-            duration = None
-        last_seen_time = datetime.fromtimestamp(last_seen).strftime('%Y-%m-%d %H:%M:%S') if last_seen else None
-        formatted_devices.append((ip, status, last_seen_time, duration, name))
-    
-    # Prepare chart data
-    chart_labels = []
-    chart_datasets = []
-    if CHART_DATA:
-        earliest_time = min(min(t for t, _ in data) for data in CHART_DATA.values())
-        chart_labels = [(datetime.fromtimestamp(t).strftime('%H:%M:%S')) for t, _ in sorted(CHART_DATA[VLANS[0]["id"]])]
-        for vlan in VLANS:
-            counts = [c for _, c in sorted(CHART_DATA[vlan["id"]])]
-            chart_datasets.append({
-                "label": f"VLAN {vlan['id']}",
-                "data": counts,
-                "borderColor": f"rgb({(vlan['id'] * 50) % 255}, {(vlan['id'] * 100) % 255}, {(vlan['id'] * 150) % 255})",
-                "fill": False
+    with sqlite3.connect('network.db') as conn:
+        c = conn.cursor()
+        query = 'SELECT ip, vlan, status, last_seen, first_seen FROM devices'
+        params = []
+        conditions = []
+        if ip_filter:
+            conditions.append('ip LIKE ?')
+            params.append(f'%{ip_filter}%')
+        if vlan_filter:
+            conditions.append('vlan = ?')
+            params.append(vlan_filter)
+        if conditions:
+            query += ' WHERE ' + ' AND '.join(conditions)
+        query += ' ORDER BY ip'
+        
+        c.execute(query, params)
+        all_devices = c.fetchall()
+        total = len(all_devices)
+        start = (page - 1) * per_page
+        devices_paginated = all_devices[start:start + per_page]
+        
+        devices_data = []
+        now = time.time()
+        for device in devices_paginated:
+            ip, vlan, status, last_seen, first_seen = device
+            if status == 'Online':
+                uptime = now - first_seen
+                status_text = f"Online for {int(uptime // 60)}m {int(uptime % 60)}s"
+            elif status == 'Offline' and last_seen:
+                downtime = now - last_seen
+                status_text = f"Last seen {int(downtime // 60)}m ago"
+            else:
+                status_text = "No data"
+            devices_data.append({
+                'ip': ip,
+                'vlan': vlan,
+                'status': status,
+                'status_text': status_text
             })
-    
-    return render_template('index.html', devices=formatted_devices, notifications=app.config['NOTIFICATIONS'][-5:],
-                         chart_labels=json.dumps(chart_labels), chart_datasets=json.dumps(chart_datasets))
+        
+        pages = (total + per_page - 1) // per_page
+        return render_template('index.html', devices=devices_data, page=page, pages=pages,
+                             ip_filter=ip_filter, vlan_filter=vlan_filter, refresh_rate=refresh_rate,
+                             notifications=notifications, vlans=vlans)
 
 @app.route('/history/<ip>')
 def history(ip):
-    conn = sqlite3.connect('devices.db')
-    c = conn.cursor()
-    c.execute("SELECT start_time, end_time, duration FROM session_history WHERE ip=? ORDER BY start_time DESC", (ip,))
-    history = c.fetchall()
-    c.execute("SELECT name FROM device_status WHERE ip=?", (ip,))
-    name = c.fetchone()[0] if c.fetchone() else None
-    conn.close()
-    
-    formatted_history = []
-    for start, end, duration in history:
-        start_time = datetime.fromtimestamp(start).strftime('%Y-%m-%d %H:%M:%S')
-        end_time = datetime.fromtimestamp(end).strftime('%Y-%m-%d %H:%M:%S') if end else "Still online"
-        duration_str = str(timedelta(seconds=int(duration))) if duration else "N/A"
-        formatted_history.append((start_time, end_time, duration_str))
-    
-    return render_template('history.html', ip=ip, name=name, history=formatted_history)
+    with sqlite3.connect('network.db') as conn:
+        c = conn.cursor()
+        c.execute('SELECT start_time, end_time, duration FROM history WHERE ip = ? ORDER BY start_time DESC', (ip,))
+        sessions = []
+        for row in c.fetchall():
+            start_time, end_time, duration = row
+            sessions.append({
+                'start': datetime.fromtimestamp(start_time).strftime('%Y-%m-%d %H:%M:%S'),
+                'end': datetime.fromtimestamp(end_time).strftime('%Y-%m-%d %H:%M:%S') if end_time else 'Ongoing',
+                'duration': f"{int(duration // 60)}m {int(duration % 60)}s" if duration else 'Ongoing'
+            })
+        return render_template('history.html', ip=ip, sessions=sessions)
 
-@app.route('/set_name', methods=['POST'])
-def set_name():
-    ip = request.form['ip']
-    name = request.form['name'].strip()
-    conn = sqlite3.connect('devices.db')
-    c = conn.cursor()
-    c.execute("UPDATE device_status SET name=? WHERE ip=?", (name if name else None, ip))
-    conn.commit()
-    conn.close()
-    return jsonify({'status': 'success'})
-
-@app.route('/get_notifications')
-def get_notifications():
-    return jsonify(app.config['NOTIFICATIONS'][-5:])
-
-@app.route('/export_csv')
-def export_csv():
-    conn = sqlite3.connect('devices.db')
-    c = conn.cursor()
-    c.execute("SELECT ip, status, last_seen, online_since, name FROM device_status")
-    devices = c.fetchall()
-    conn.close()
-    
-    current_time = time.time()
-    output = StringIO()
-    writer = csv.writer(output)
-    writer.writerow(['IP', 'Status', 'Last Seen', 'Online Since', 'Name'])
-    
-    for ip, status, last_seen, online_since, name in devices:
-        last_seen_str = datetime.fromtimestamp(last_seen).strftime('%Y-%m-%d %H:%M:%S') if last_seen else ''
-        online_since_str = datetime.fromtimestamp(online_since).strftime('%Y-%m-%d %H:%M:%S') if online_since else ''
-        writer.writerow([ip, status, last_seen_str, online_since_str, name or ''])
-    
-    output.seek(0)
-    return output.getvalue(), 200, {
-        'Content-Type': 'text/csv',
-        'Content-Disposition': 'attachment; filename=devices.csv'
-    }
-
-if __name__ == '__main__':
-    app.config['NOTIFICATIONS'] = []
-    init_db()
-    threading.Thread(target=background_task, daemon=True).start()
-    app.run(debug=True)
+# Start async loop
+if platform.system() == "Emscripten":
+    asyncio.ensure_future(ping_vlans())
+else:
+    if __name__ == "__main__":
+        init_db()
+        socketio.start_background_task(ping_vlans)
+        socketio.run(app, debug=True)
