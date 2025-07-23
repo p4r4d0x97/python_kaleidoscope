@@ -80,7 +80,7 @@
         <div class="notification-container">
             {% for notification in notifications %}
                 <div class="notification {% if notification.status == 'Online' %}online{% else %}offline{% endif %}">
-                    {{ notification.ip }} is {{ notification.status }} at {{ notification.time|datetimeformat }}
+                    {{ notification.ip }} is {{ notification.status }} at {{ notification.time }}
                 </div>
             {% endfor %}
         </div>
