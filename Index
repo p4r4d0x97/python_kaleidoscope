@@ -74,7 +74,7 @@
             <tbody id="deviceTable">
                 {% for device in devices %}
                 <tr>
-                    <td><a href="{{ url_for('history', ip=device.ip) }}" target="_blank">{{ device.ip }}</a></td>
+                    <td><a href="{{ url_for('history', ip=device.ip, ip_filter=ip_filter, vlan_filter=vlan_filter, status_filter=status_filter, page=page, per_page=per_page, refresh=refresh_rate) }}" target="_blank">{{ device.ip }}</a></td>
                     <td>{{ device.vlan }}</td>
                     <td>{{ device.status_text }}</td>
                 </tr>
@@ -96,7 +96,7 @@
                         <a class="page-link" href="{{ url_for('index', page=page-1, ip=ip_filter, vlan=vlan_filter, status=status_filter, per_page=per_page, refresh=refresh_rate) }}">Previous</a>
                     </li>
                 {% endif %}
-                {% for p in range(max(1, page-2), min(pages + 1, page+3)) %}
+                {% for p in page_range %}
                     <li class="page-item {% if p == page %}active{% endif %}">
                         <a class="page-link" href="{{ url_for('index', page=p, ip=ip_filter, vlan=vlan_filter, status=status_filter, per_page=per_page, refresh=refresh_rate) }}">{{ p }}</a>
                     </li>
@@ -138,7 +138,7 @@
                     statusText = 'Offline';
                 }
                 row.innerHTML = `
-                    <td><a href="/history/${ip}" target="_blank">${ip}</a></td>
+                    <td><a href="/history/${ip}?ip_filter={{ ip_filter }}&vlan_filter={{ vlan_filter }}&status_filter={{ status_filter }}&page={{ page }}&per_page={{ per_page }}&refresh={{ refresh_rate }}" target " target="_blank">${ip}</a></td>
                     <td>${device.vlan}</td>
                     <td>${statusText}</td>
                 `;
