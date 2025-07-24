@@ -1,198 +1,160 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Network Dashboard</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/socket.io@4.5.0/dist/socket.io.min.js"></script>
-    <style>
-        .notification-container {
-            position: fixed;
-            bottom: 10px;
-            left: 10px;
-            width: 300px;
-        }
-        .notification {
-            background-color: #f8f9fa;
-            padding: 10px;
-            margin-bottom: 5px;
-            border-radius: 5px;
-            border: 1px solid #ddd;
-        }
-        .online { background-color: #d4edda; }
-        .offline { background-color: #f8d7da; }
-    </style>
-</head>
-<body>
-    <div class="container mt-4">
-        <h1>Network Dashboard</h1>
-        <form id="filterForm" class="mb-3">
-            <div class="row">
-                <div class="col-md-3">
-                    <input type="text" name="ip" class="form-control" placeholder="IP Filter" value="{{ ip_filter }}">
-                </div>
-                <div class="col-md-2">
-                    <select name="vlan" class="form-control">
-                        <option value="">All VLANs</option>
-                        {% for vlan in vlans %}
-                            <option value="{{ vlan.id }}" {% if vlan_filter == vlan.id|string %}selected{% endif %}>VLAN {{ vlan.id }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-                <div class="col-md-2">
-                    <select name="status" class="form-control">
-                        <option value="">All Statuses</option>
-                        <option value="Online" {% if status_filter == 'Online' %}selected{% endif %}>Online</option>
-                        <option value="Offline" {% if status_filter == 'Offline' %}selected{% endif %}>Offline</option>
-                    </select>
-                </div>
-                <div class="col-md-2">
-                    <input type="number" name="refresh" id="refreshInput" class="form-control" placeholder="Refresh (s)" value="{{ refresh_rate }}" min="5">
-                </div>
-                <div class="col-md-2">
-                    <select name="per_page" id="perPageSelect" class="form-control">
-                        <option value="10" {% if per_page == 10 %}selected{% endif %}>10 per page</option>
-                        <option value="25" {% if per_page == 25 %}selected{% endif %}>25 per page</option>
-                        <option value="50" {% if per_page == 50 %}selected{% endif %}>50 per page</option>
-                        <option value="100" {% if per_page == 100 %}selected{% endif %}>100 per page</option>
-                    </select>
-                </div>
-                <div class="col-md-1">
-                    <button type="submit" class="btn btn-primary">Apply</button>
-                </div>
-            </div>
-        </form>
-
-        <table class="table table-striped">
-            <thead>
-                <tr>
-                    <th>IP Address</th>
-                    <th>VLAN</th>
-                    <th>Status</th>
-                </tr>
-            </thead>
-            <tbody id="deviceTable">
-                {% for device in devices %}
-                <tr>
-                    <td><a href="{{ url_for('history', ip=device.ip, ip_filter=ip_filter, vlan_filter=vlan_filter, status_filter=status_filter, page=page, per_page=per_page, refresh=refresh_rate) }}" target="_blank">{{ device.ip }}</a></td>
-                    <td>{{ device.vlan }}</td>
-                    <td>{{ device.status_text }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-
-        <nav class="d-flex justify-content-between align-items-center">
-            <div>
-                Showing page {{ page }} of {{ pages }}
-            </div>
-            <div class="input-group w-25">
-                <input type="number" id="jumpToPage" class="form-control" placeholder="Go to page" min="1" max="{{ pages }}">
-                <button class="btn btn-outline-secondary" type="button" onclick="jumpToPage()">Go</button>
-            </div>
-            <ul class="pagination mb-0">
-                {% if page > 1 %}
-                    <li class="page-item">
-                        <a class="page-link" href="{{ url_for('index', page=page-1, ip=ip_filter, vlan=vlan_filter, status=status_filter, per_page=per_page, refresh=refresh_rate) }}">Previous</a>
-                    </li>
-                {% endif %}
-                {% for p in page_range %}
-                    <li class="page-item {% if p == page %}active{% endif %}">
-                        <a class="page-link" href="{{ url_for('index', page=p, ip=ip_filter, vlan=vlan_filter, status=status_filter, per_page=per_page, refresh=refresh_rate) }}">{{ p }}</a>
-                    </li>
-                {% endfor %}
-                {% if page < pages %}
-                    <li class="page-item">
-                        <a class="page-link" href="{{ url_for('index', page=page+1, ip=ip_filter, vlan=vlan_filter, status=status_filter, per_page=per_page, refresh=refresh_rate) }}">Next</a>
-                    </li>
-                {% endif %}
-            </ul>
-        </nav>
-
-        <div class="notification-container">
-            {% for notification in notifications %}
-                <div class="notification {% if notification.status == 'Online' %}online{% else %}offline{% endif %}">
-                    {{ notification.ip }} is {{ notification.status }} at {{ notification.time }}
-                </div>
-            {% endfor %}
-        </div>
-    </div>
-
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IP Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.0/socket.io.js"></script>
     <script>
         const socket = io();
-        socket.on('update', function(data) {
-            const tbody = document.getElementById('deviceTable');
-            tbody.innerHTML = '';
-            Object.keys(data).forEach(ip => {
-                const device = data[ip];
-                const row = document.createElement('tr');
-                const now = Date.now() / 1000;
-                let statusText = '';
-                if (device.status === 'Online') {
-                    const uptime = now - device.first_seen;
-                    statusText = `Online for ${Math.floor(uptime / 60)}m ${Math.floor(uptime % 60)}s`;
-                } else if (device.status === 'Offline' && device.last_seen) {
-                    const downtime = now - device.last_seen;
-                    statusText = `Last seen ${Math.floor(downtime / 60)}m ago`;
-                } else {
-                    statusText = 'Offline';
-                }
-                row.innerHTML = `
-                    <td><a href="/history/${ip}?ip_filter={{ ip_filter }}&vlan_filter={{ vlan_filter }}&status_filter={{ status_filter }}&page={{ page }}&per_page={{ per_page }}&refresh={{ refresh_rate }}" target " target="_blank">${ip}</a></td>
-                    <td>${device.vlan}</td>
-                    <td>${statusText}</td>
-                `;
-                const statusFilter = "{{ status_filter }}";
-                const vlanFilter = "{{ vlan_filter }}";
-                const ipFilter = "{{ ip_filter }}";
-                if ((!statusFilter || statusFilter === device.status) &&
-                    (!vlanFilter || vlanFilter == device.vlan) &&
-                    (!ipFilter || ip.includes(ipFilter))) {
-                    tbody.appendChild(row);
-                }
+        let notifications = [];
+
+        socket.on('status_change', (data) => {
+            const vlanFilter = '{{ vlan_filter }}';
+            const ipFilter = '{{ ip_filter }}';
+            const statusFilter = '{{ status_filter }}';
+
+            if ((vlanFilter === '' || data.vlan.toString() === vlanFilter) &&
+                (ipFilter === '' || data.ip.includes(ipFilter)) &&
+                (statusFilter === '' || data.status === statusFilter)) {
+                addNotification(`IP ${data.ip} changed to ${data.status} at ${new Date(data.timestamp).toLocaleString()}`);
+            }
+        });
+
+        function addNotification(message) {
+            notifications.push(message);
+            if (notifications.length > 5) notifications.shift();
+
+            const container = document.getElementById('notification-container');
+            container.innerHTML = '';
+            notifications.forEach((msg, index) => {
+                const div = document.createElement('div');
+                div.className = 'bg-gray-800 text-white p-4 mb-2 rounded shadow-lg opacity-0 transition-opacity duration-500';
+                div.innerText = msg;
+                container.appendChild(div);
+                setTimeout(() => div.classList.add('opacity-100'), 10);
+                setTimeout(() => {
+                    div.classList.remove('opacity-100');
+                    setTimeout(() => {
+                        notifications.splice(index, 1);
+                        div.remove();
+                    }, 500);
+                }, 5000);
             });
-        });
-
-        socket.on('notification', function(data) {
-            const container = document.querySelector('.notification-container');
-            const div = document.createElement('div');
-            div.className = `notification ${data.status.toLowerCase()}`;
-            div.textContent = `${data.ip} is ${data.status} at ${data.time}`;
-            container.insertBefore(div, container.firstChild);
-            if (container.children.length > 5) {
-                container.removeChild(container.lastChild);
-            }
-        });
-
-        function jumpToPage() {
-            const pageInput = document.getElementById('jumpToPage');
-            const page = parseInt(pageInput.value);
-            if (page >= 1 && page <= {{ pages }}) {
-                const url = new URL(window.location);
-                url.searchParams.set('page', page);
-                window.location = url.toString();
-            }
         }
 
-        // Refresh page based on user input
-        const refreshInput = document.getElementById('refreshInput');
-        const perPageSelect = document.getElementById('perPageSelect');
-        let refreshRate = {{ refresh_rate }} * 1000;
-
-        function startRefresh() {
-            clearTimeout(window.refreshTimeout);
-            refreshRate = parseInt(refreshInput.value) * 1000 || 30000;
-            window.refreshTimeout = setTimeout(() => {
-                const url = new URL(window.location);
-                url.searchParams.set('refresh', refreshInput.value);
-                url.searchParams.set('per_page', perPageSelect.value);
-                window.location = url.toString();
-            }, refreshRate);
+        function setRefresh() {
+            const interval = document.getElementById('refreshInterval').value;
+            window.location.href = `/?refresh=${interval}${getFilterParams()}&page={{ page }}`;
         }
 
-        refreshInput.addEventListener('change', startRefresh);
-        perPageSelect.addEventListener('change', startRefresh);
-        startRefresh();
+        function getFilterParams() {
+            const vlan = document.getElementById('vlanFilter').value;
+            const ip = document.getElementById('ipFilter').value;
+            const status = document.getElementById('statusFilter').value;
+            let params = '';
+            if (vlan) params += `&vlan=${vlan}`;
+            if (ip) params += `&ip=${ip}`;
+            if (status) params += `&status=${status}`;
+            return params;
+        }
     </script>
+</head>
+<body class="bg-gray-100" onload="setTimeout(() => location.reload(), {{ refresh_interval }} * 1000)">
+    <div class="container mx-auto p-4">
+        <h1 class="text-2xl font-bold mb-4">IP Dashboard ({{ total_ips }} IPs)</h1>
+
+        <div class="mb-4 flex flex-wrap gap-4">
+            <div>
+                <label for="vlanFilter" class="block text-sm font-medium text-gray-700">VLAN Filter</label>
+                <select id="vlanFilter" onchange="window.location.href='/?refresh={{ refresh_interval }}&page={{ page }}' + getFilterParams()" class="mt-1 block w-full rounded-md border-gray-300">
+                    <option value="">All</option>
+                    {% for vlan in vlans %}
+                    <option value="{{ vlan }}" {% if vlan_filter == vlan|string %}selected{% endif %}>VLAN {{ vlan }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div>
+                <label for="ipFilter" class="block text-sm font-medium text-gray-700">IP Filter</label>
+                <input type="text" id="ipFilter" value="{{ ip_filter }}" oninput="window.location.href='/?refresh={{ refresh_interval }}&page={{ page }}' + getFilterParams()" class="mt-1 block w-full rounded-md border-gray-300">
+            </div>
+
+            <div>
+                <label for="statusFilter" class="block text-sm font-medium text-gray-700">Status Filter</label>
+                <select id="statusFilter" onchange="window.location.href='/?refresh={{ refresh_interval }}&page={{ page }}' + getFilterParams()" class="mt-1 block w-full rounded-md border-gray-300">
+                    <option value="">All</option>
+                    <option value="online" {% if status_filter == 'online' %}selected{% endif %}>Online</option>
+                    <option value="offline" {% if status_filter == 'offline' %}selected{% endif %}>Offline</option>
+                    <option value="no_data" {% if status_filter == 'no_data' %}selected{% endif %}>No Data</option>
+                </select>
+            </div>
+
+            <div>
+                <label for="refreshInterval" class="block text-sm font-medium text-gray-700">Refresh Interval (seconds)</label>
+                <input type="number" id="refreshInterval" value="{{ refresh_interval }}" min="10" class="mt-1 block w-full rounded-md border-gray-300">
+                <button onclick="setRefresh()" class="mt-2 bg-blue-500 text-white px-4 py-2 rounded">Set</button>
+            </div>
+        </div>
+
+        <div class="overflow-x-auto">
+            <table class="min-w-full bg-white border border-gray-200">
+                <thead>
+                    <tr>
+                        <th class="px-6 py-3 border-b text-left text-xs font-medium text-gray-500 uppercase tracking-wider">IP Address</th>
+                        <th class="px-6 py-3 border-b text-left text-xs font-medium text-gray-500 uppercase tracking-wider">VLAN</th>
+                        <th class="px-6 py-3 border-b text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                        <th class="px-6 py-3 border-b text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Uptime/Last Seen</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for ip in ips %}
+                    <tr>
+                        <td class="px-6 py-4 border-b">
+                            <a href="/history/{{ ip.ip }}" target="_blank" class="text-blue-600 hover:underline">{{ ip.ip }}</a>
+                        </td>
+                        <td class="px-6 py-4 border-b">{{ ip.vlan }}</td>
+                        <td class="px-6 py-4 border-b">
+                            <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full
+                                {% if ip.status == 'online' %}bg-green-100 text-green-800
+                                {% elif ip.status == 'offline' %}bg-red-100 text-red-800
+                                {% else %}bg-gray-100 text-gray-800{% endif %}">
+                                {{ ip.status|capitalize }}
+                            </span>
+                        </td>
+                        <td class="px-6 py-4 border-b">
+                            {% if ip.status == 'online' %}
+                            Uptime: {{ ip.uptime }}
+                            {% elif ip.status == 'offline' %}
+                            Last Seen: {{ ip.last_seen }}
+                            {% else %}
+                            No Data
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <div class="mt-4 flex justify-between">
+            <div>
+                {% if page > 1 %}
+                <a href="/?page={{ page - 1 }}&refresh={{ refresh_interval }}{% if vlan_filter %}&vlan={{ vlan_filter }}{% endif %}{% if ip_filter %}&ip={{ ip_filter }}{% endif %}{% if status_filter %}&status={{ status_filter }}{% endif %}" class="bg-blue-500 text-white px-4 py-2 rounded">Previous</a>
+                {% endif %}
+            </div>
+            <div class="text-gray-700">
+                Page {{ page }} of {{ total_pages }}
+            </div>
+            <div>
+                {% if page < total_pages %}
+                <a href="/?page={{ page + 1 }}&refresh={{ refresh_interval }}{% if vlan_filter %}&vlan={{ vlan_filter }}{% endif %}{% if ip_filter %}&ip={{ ip_filter }}{% endif %}{% if status_filter %}&status={{ status_filter }}{% endif %}" class="bg-blue-500 text-white px-4 py-2 rounded">Next</a>
+                {% endif %}
+            </div>
+        </div>
+
+        <div id="notification-container" class="fixed bottom-4 right-4 w-80"></div>
+    </div>
 </body>
 </html>
