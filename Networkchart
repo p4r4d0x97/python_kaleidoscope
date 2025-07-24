@@ -1,222 +1,198 @@
-import asyncio
-import platform
-import subprocess
+from flask import Flask, render_template, request
+from flask_socketio import SocketIO, emit
+import sqlite3
 import ipaddress
+import asyncio
 import time
 from datetime import datetime, timedelta
-from flask import Flask, render_template, request, jsonify
-from flask_socketio import SocketIO
-import sqlite3
-from threading import Lock
-import json
-from collections import defaultdict
+import platform
+import subprocess
+import threading
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret!'
-socketio = SocketIO(app, async_mode='threading')
+socketio = SocketIO(app)
 
-# Database setup
+
+# Database initialization
 def init_db():
-    with sqlite3.connect('network.db') as conn:
+    with sqlite3.connect('ip_status.db') as conn:
         c = conn.cursor()
-        c.execute('''CREATE TABLE IF NOT EXISTS devices
-                     (ip TEXT PRIMARY KEY, vlan INTEGER, status TEXT, last_seen REAL, first_seen REAL)''')
-        c.execute('''CREATE TABLE IF NOT EXISTS history
-                     (ip TEXT, start_time REAL, end_time REAL, duration REAL,
-                      FOREIGN KEY(ip) REFERENCES devices(ip))''')
+        c.execute('''CREATE TABLE IF NOT EXISTS ip_status
+                     (ip TEXT PRIMARY KEY, vlan INTEGER, status TEXT, last_seen TEXT, uptime_start TEXT)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS session_history
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT, ip TEXT, start_time TEXT, end_time TEXT)''')
         conn.commit()
 
-# VLAN configuration
+
+# Sample VLANs and IPs
 vlans = [
     {'id': 10, 'network': '192.168.1.0/24'},
     {'id': 20, 'network': '192.168.2.0/24'},
-    {'id': 30, 'network': '192.168.3.0/24'},
-    {'id': 40, 'network': '192.168.4.0/24'}
 ]
 
-# Thread-safe data storage
-devices = defaultdict(lambda: {'status': 'Offline', 'last_seen': 0, 'first_seen': 0, 'vlan': 0})
-notifications = []
-lock = Lock()
 
-# Ping function
-async def ping_host(ip):
+def get_all_ips():
+    ips = []
+    with sqlite3.connect('ip_status.db') as conn:
+        c = conn.cursor()
+        for vlan in vlans:
+            network = ipaddress.ip_network(vlan['network'])
+            for ip in network.hosts():
+                ip_str = str(ip)
+                c.execute('SELECT * FROM ip_status WHERE ip=?', (ip_str,))
+                result = c.fetchone()
+                if not result:
+                    c.execute(
+                        'INSERT OR IGNORE INTO ip_status (ip, vlan, status, last_seen, uptime_start) VALUES (?, ?, ?, ?, ?)',
+                        (ip_str, vlan['id'], 'no_data', 'N/A', 'N/A'))
+                else:
+                    c.execute('UPDATE ip_status SET vlan=? WHERE ip=?', (vlan['id'], ip_str))
+                c.execute('SELECT * FROM ip_status WHERE ip=?', (ip_str,))
+                result = c.fetchone()
+                ips.append({
+                    'ip': ip_str,
+                    'vlan': result[1],
+                    'status': result[2],
+                    'last_seen': result[3],
+                    'uptime_start': result[4]
+                })
+        conn.commit()
+    return ips
+
+
+async def ping_ip(ip):
     param = '-n' if platform.system().lower() == 'windows' else '-c'
-    cmd = ['ping', param, '1', str(ip)]
+    cmd = ['ping', param, '1', '-w', '2', ip]
     try:
-        output = await asyncio.create_subprocess_exec(
-            *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
-        await output.communicate()
-        return output.returncode == 0
-    except Exception:
+        process = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        await process.communicate()
+        return process.returncode == 0
+    except:
         return False
 
-# Update device status
-async def update_device_status(ip, vlan, is_online):
-    with lock:
-        now = time.time()
-        with sqlite3.connect('network.db') as conn:
-            c = conn.cursor()
-            c.execute('SELECT status, first_seen FROM devices WHERE ip = ?', (ip,))
-            result = c.fetchone()
-            
-            if is_online:
-                if result and result[0] == 'Offline':
-                    # Device came online
-                    c.execute('UPDATE devices SET status = ?, last_seen = ?, first_seen = ? WHERE ip = ?',
-                             ('Online', now, now, ip))
-                    c.execute('INSERT INTO history (ip, start_time) VALUES (?, ?)', (ip, now))
-                    if not request.args.get('ip') or request.args.get('ip') == ip or \
-                       not request.args.get('vlan') or str(request.args.get('vlan')) == str(vlan):
-                        notifications.append({'ip': ip, 'status': 'Online', 'time': now})
-                        if len(notifications) > 5:
-                            notifications.pop(0)
-                        socketio.emit('notification', {'ip': ip, 'status': 'Online', 'time': datetime.fromtimestamp(now).strftime('%Y-%m-%d %H:%M:%S')})
-                elif not result:
-                    # New device
-                    c.execute('INSERT INTO devices (ip, vlan, status, last_seen, first_seen) VALUES (?, ?, ?, ?, ?)',
-                             (ip, vlan, 'Online', now, now))
-                    c.execute('INSERT INTO history (ip, start_time) VALUES (?, ?)', (ip, now))
-                    if not request.args.get('ip') or request.args.get('ip') == ip or \
-                       not request.args.get('vlan') or str(request.args.get('vlan')) == str(vlan):
-                        notifications.append({'ip': ip, 'status': 'Online', 'time': now})
-                        if len(notifications) > 5:
-                            notifications.pop(0)
-                        socketio.emit('notification', {'ip': ip, 'status': 'Online', 'time': datetime.fromtimestamp(now).strftime('%Y-%m-%d %H:%M:%S')})
-                devices[ip]['status'] = 'Online'
-                devices[ip]['first_seen'] = now if not result else result[1]
+
+async def ping_vlan(vlan_ips, conn, cursor):
+    tasks = [ping_ip(ip['ip']) for ip in vlan_ips]
+    results = await asyncio.gather(*tasks)
+
+    for ip, result in zip(vlan_ips, results):
+        now = datetime.now().isoformat()
+        cursor.execute('SELECT status, uptime_start FROM ip_status WHERE ip=?', (ip['ip'],))
+        current = cursor.fetchone()
+        new_status = 'online' if result else 'offline'
+
+        if current[0] != new_status:
+            if result:
+                cursor.execute('UPDATE ip_status SET status=?, uptime_start=?, last_seen=? WHERE ip=?',
+                               (new_status, now, now, ip['ip']))
+                cursor.execute('INSERT INTO session_history (ip, start_time) VALUES (?, ?)',
+                               (ip['ip'], now))
             else:
-                if result and result[0] == 'Online':
-                    # Device went offline
-                    c.execute('UPDATE devices SET status = ?, last_seen = ? WHERE ip = ?',
-                             ('Offline', now, ip))
-                    c.execute('UPDATE history SET end_time = ?, duration = ? WHERE ip = ? AND end_time IS NULL',
-                             (now, now - result[1], ip))
-                    if not request.args.get('ip') or request.args.get('ip') == ip or \
-                       not request.args.get('vlan') or str(request.args.get('vlan')) == str(vlan):
-                        notifications.append({'ip': ip, 'status': 'Offline', 'time': now})
-                        if len(notifications) > 5:
-                            notifications.pop(0)
-                        socketio.emit('notification', {'ip': ip, 'status': 'Offline', 'time': datetime.fromtimestamp(now).strftime('%Y-%m-%d %H:%M:%S')})
-                elif not result:
-                    c.execute('INSERT INTO devices (ip, vlan, status, last_seen) VALUES (?, ?, ?, ?)',
-                             (ip, vlan, 'Offline', now))
-                devices[ip]['status'] = 'Offline'
-                devices[ip]['last_seen'] = now
-            devices[ip]['vlan'] = vlan
-            conn.commit()
+                cursor.execute('UPDATE ip_status SET status=?, last_seen=? WHERE ip=?',
+                               (new_status, now, ip['ip']))
+                if current[0] == 'online':
+                    cursor.execute('UPDATE session_history SET end_time=? WHERE ip=? AND end_time IS NULL',
+                                   (now, ip['ip']))
+            socketio.emit('status_change', {
+                'ip': ip['ip'],
+                'vlan': ip['vlan'],
+                'status': new_status,
+                'timestamp': now
+            })
+        elif current[0] == 'online':
+            cursor.execute('UPDATE ip_status SET last_seen=? WHERE ip=?', (now, ip['ip']))
 
-# Async ping loop
-async def ping_vlans():
+    conn.commit()
+
+
+def run_ping_loop():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     while True:
-        for i in range(0, len(vlans), 2):
-            tasks = []
-            for vlan in vlans[i:i+2]:
-                network = ipaddress.ip_network(vlan['network'])
-                for ip in network.hosts():
-                    tasks.append(ping_host(str(ip)))
-                results = await asyncio.gather(*tasks)
-                for ip, result in zip(network.hosts(), results):
-                    await update_device_status(str(ip), vlan['id'], result)
-            socketio.emit('update', {ip: {'status': data['status'], 'vlan': data['vlan'], 
-                                       'last_seen': data['last_seen'], 'first_seen': data['first_seen']} 
-                                  for ip, data in devices.items()})
-            await asyncio.sleep(5)
-        await asyncio.sleep(30)
+        with sqlite3.connect('ip_status.db') as conn:
+            cursor = conn.cursor()
+            for i in range(0, len(vlans), 2):
+                vlan_group = vlans[i:i + 2]
+                vlan_ips = []
+                for vlan in vlan_group:
+                    network = ipaddress.ip_network(vlan['network'])
+                    vlan_ips.extend({'ip': str(ip), 'vlan': vlan['id']} for ip in network.hosts())
 
-# Flask routes
+                loop.run_until_complete(ping_vlan(vlan_ips, conn, cursor))
+                time.sleep(5)
+
+    loop.close()
+
+
 @app.route('/')
 def index():
-    page = int(request.args.get('page', 1))
-    per_page = int(request.args.get('per_page', 10))
-    ip_filter = request.args.get('ip', '')
+    refresh_interval = request.args.get('refresh', '30')
     vlan_filter = request.args.get('vlan', '')
+    ip_filter = request.args.get('ip', '')
     status_filter = request.args.get('status', '')
-    refresh_rate = int(request.args.get('refresh', 30))
-    
-    with sqlite3.connect('network.db') as conn:
-        c = conn.cursor()
-        query = 'SELECT ip, vlan, status, last_seen, first_seen FROM devices'
-        params = []
-        conditions = []
-        if ip_filter:
-            conditions.append('ip LIKE ?')
-            params.append(f'%{ip_filter}%')
-        if vlan_filter:
-            conditions.append('vlan = ?')
-            params.append(vlan_filter)
-        if status_filter:
-            conditions.append('status = ?')
-            params.append(status_filter)
-        if conditions:
-            query += ' WHERE ' + ' AND '.join(conditions)
-        query += ' ORDER BY ip'
-        
-        c.execute(query, params)
-        all_devices = c.fetchall()
-        total = len(all_devices)
-        start = (page - 1) * per_page
-        devices_paginated = all_devices[start:start + per_page]
-        
-        devices_data = []
-        now = time.time()
-        for device in devices_paginated:
-            ip, vlan, status, last_seen, first_seen = device
-            if status == 'Online':
-                uptime = now - first_seen
-                status_text = f"Online for {int(uptime // 60)}m {int(uptime % 60)}s"
-            elif status == 'Offline' and last_seen:
-                downtime = now - last_seen
-                status_text = f"Last seen {int(downtime // 60)}m ago"
+    page = int(request.args.get('page', 1))
+    per_page = 10
+
+    ips = get_all_ips()
+    filtered_ips = []
+
+    for ip in ips:
+        if (not vlan_filter or str(ip['vlan']) == vlan_filter) and \
+                (not ip_filter or ip_filter in ip['ip']) and \
+                (not status_filter or ip['status'] == status_filter):
+            if ip['status'] == 'online' and ip['uptime_start'] != 'N/A':
+                uptime_start = datetime.fromisoformat(ip['uptime_start'])
+                uptime = datetime.now() - uptime_start
+                ip['uptime'] = str(timedelta(seconds=int(uptime.total_seconds())))
             else:
-                status_text = "Offline"
-            devices_data.append({
-                'ip': ip,
-                'vlan': vlan,
-                'status': status,
-                'status_text': status_text
-            })
-        
-        pages = (total + per_page - 1) // per_page if total > 0 else 1
-        # Calculate pagination range in Python
-        page_range_start = 1 if page <= 3 else page - 2
-        page_range_end = pages + 1 if page > pages - 2 else page + 3
-        if page_range_end > pages + 1:
-            page_range_end = pages + 1
-        page_range = range(page_range_start, page_range_end)
-        
-        return render_template('index.html', devices=devices_data, page=page, pages=pages,
-                             ip_filter=ip_filter, vlan_filter=vlan_filter, status_filter=status_filter,
-                             per_page=per_page, refresh_rate=refresh_rate, notifications=notifications, 
-                             vlans=vlans, page_range=page_range)
+                ip['uptime'] = 'N/A'
+            filtered_ips.append(ip)
+
+    total_ips = len(filtered_ips)
+    total_pages = (total_ips + per_page - 1) // per_page
+    start = (page - 1) * per_page
+    end = start + per_page
+    paginated_ips = filtered_ips[start:end]
+
+    return render_template('index.html',
+                           ips=paginated_ips,
+                           vlans=[vlan['id'] for vlan in vlans],
+                           refresh_interval=refresh_interval,
+                           page=page,
+                           total_pages=total_pages,
+                           total_ips=total_ips,
+                           vlan_filter=vlan_filter,
+                           ip_filter=ip_filter,
+                           status_filter=status_filter)
+
 
 @app.route('/history/<ip>')
 def history(ip):
-    with sqlite3.connect('network.db') as conn:
+    with sqlite3.connect('ip_status.db') as conn:
         c = conn.cursor()
-        c.execute('SELECT start_time, end_time, duration FROM history WHERE ip = ? ORDER BY start_time DESC', (ip,))
-        sessions = []
-        for row in c.fetchall():
-            start_time, end_time, duration = row
-            sessions.append({
-                'start': datetime.fromtimestamp(start_time).strftime('%Y-%m-%d %H:%M:%S'),
-                'end': datetime.fromtimestamp(end_time).strftime('%Y-%m-%d %H:%M:%S') if end_time else 'Ongoing',
-                'duration': f"{int(duration // 60)}m {int(duration % 60)}s" if duration else 'Ongoing'
+        c.execute('SELECT start_time, end_time FROM session_history WHERE ip=? ORDER BY start_time DESC', (ip,))
+        sessions = c.fetchall()
+        history = []
+        for start, end in sessions:
+            start_time = datetime.fromisoformat(start)
+            end_time = datetime.fromisoformat(end) if end else None
+            duration = (end_time - start_time) if end_time else 'Ongoing'
+            history.append({
+                'start': start_time.strftime('%Y-%m-%d %H:%M:%S'),
+                'end': end_time.strftime('%Y-%m-%d %H:%M:%S') if end_time else 'Ongoing',
+                'duration': str(duration)
             })
-        return render_template('history.html', ip=ip, sessions=sessions,
-                             ip_filter=request.args.get('ip', ''),
-                             vlan_filter=request.args.get('vlan', ''),
-                             status_filter=request.args.get('status', ''),
-                             page=request.args.get('page', 1),
-                             per_page=request.args.get('per_page', 10),
-                             refresh_rate=request.args.get('refresh', 30))
+    return render_template('history.html', ip=ip, history=history)
 
-# Start async loop
-if platform.system() == "Emscripten":
-    asyncio.ensure_future(ping_vlans())
-else:
-    if __name__ == "__main__":
-        init_db()
-        socketio.start_background_task(ping_vlans)
-        socketio.run(app, debug=True)
+
+@socketio.on('connect')
+def handle_connect():
+    emit('connected', {'message': 'Connected to notifications'})
+
+
+if __name__ == '__main__':
+    init_db()
+    threading.Thread(target=run_ping_loop, daemon=True).start()
+    socketio.run(app, debug=True)
