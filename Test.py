@@ -10,7 +10,7 @@ pipe_height = 15
 base_height = 5
 base_diameter = 50
 tooth_depth = 2
-pipe_outer_diameter = 15  # Added: outer diameter for the hollow pipe
+pipe_outer_diameter = 15  # Outer diameter for the hollow pipe
 
 # Derived
 gear_radius = outer_diameter / 2
@@ -20,10 +20,10 @@ tooth_base_length = tooth_top_length * 1.5  # Wider base for trapezoidal teeth
 if inner_diameter >= outer_diameter or outer_diameter >= base_diameter or inner_diameter >= pipe_outer_diameter:
     raise ValueError("Invalid dimensions: ensure inner_diameter < pipe_outer_diameter < outer_diameter < base_diameter")
 
-# Gear body (cylinder without teeth)
+# Create gear body (cylinder without teeth)
 gear_body = (
     cq.Workplane("XY")
-    .circle(gear_radius - tooth_depth)
+    .circle(gear_radius - tooth_depth)  # Base gear radius
     .extrude(gear_height)
 )
 
@@ -38,24 +38,21 @@ tooth = (
     .extrude(gear_height)
 )
 
-# Distribute teeth around the gear using polarArray
-teeth = (
-    cq.Workplane("XY")
-    .union(tooth)
-    .polarArray(radius=0, startAngle=0, angle=360, count=num_teeth)
-)
+# Create teeth using polarArray and combine with gear body
+gear_with_teeth = gear_body
+for i in range(num_teeth):
+    angle = i * 360 / num_teeth
+    rotated_tooth = tooth.rotate((0, 0, 0), (0, 0, 1), angle)
+    gear_with_teeth = gear_with_teeth.union(rotated_tooth)
 
-# Combine gear body and teeth
-gear_with_teeth = gear_body.union(teeth)
-
-# Base under the gear
+# Create base under the gear
 base = (
     cq.Workplane("XY")
     .circle(base_diameter / 2)
-    .extrude(base_height)  # Positive extrusion (base is at z=0 to z=base_height)
+    .extrude(base_height)
 )
 
-# Hollow pipe on top of gear
+# Create hollow pipe on top of gear
 pipe = (
     cq.Workplane("XY")
     .circle(pipe_outer_diameter / 2)
@@ -72,8 +69,8 @@ total_height = base_height + gear_height + pipe_height
 hole = (
     cq.Workplane("XY")
     .circle(inner_diameter / 2)
-    .extrude(total_height, both=True)  # Extrude in both directions to ensure full cut
-    .translate((0, 0, -base_height))  # Shift to start at bottom of base
+    .extrude(total_height)  # Extrude to cover full height
+    .translate((0, 0, -base_height))  # Start at bottom of base
 )
 
 # Cut the hole from the full model
