@@ -3,7 +3,7 @@ import cadquery as cq
 # Parameters
 gear_height = 10
 num_teeth = 20
-tooth_top_length = 2
+tooth_top_length = 0.1  # Small value for pointy teeth (near-zero for triangular shape)
 outer_diameter = 40
 inner_diameter = 10
 pipe_height = 15
@@ -13,8 +13,8 @@ tooth_depth = 2
 pipe_outer_diameter = 15  # Outer diameter for the hollow pipe
 
 # Derived
-gear_radius = outer_diameter / 2
-tooth_base_length = tooth_top_length * 1.5  # Wider base for trapezoidal teeth
+gear_radius = (outer_diameter / 2) - tooth_depth  # Radius of gear body (outer_diameter is tip-to-tip)
+tooth_base_length = tooth_top_length * 3  # Wider base for triangular teeth (adjusted for pointy shape)
 
 # Validate parameters
 if inner_diameter >= outer_diameter or outer_diameter >= base_diameter or inner_diameter >= pipe_outer_diameter:
@@ -23,22 +23,21 @@ if inner_diameter >= outer_diameter or outer_diameter >= base_diameter or inner_
 # Create gear body (cylinder without teeth)
 gear_body = (
     cq.Workplane("XY")
-    .circle(gear_radius - tooth_depth)  # Base gear radius
+    .circle(gear_radius)
     .extrude(gear_height)
 )
 
-# Create a single trapezoidal tooth
+# Create a single pointy (triangular-like) tooth
 tooth = (
     cq.Workplane("XY")
-    .moveTo(-tooth_base_length / 2, gear_radius - tooth_depth)
-    .lineTo(tooth_base_length / 2, gear_radius - tooth_depth)
-    .lineTo(tooth_top_length / 2, gear_radius + tooth_depth)
-    .lineTo(-tooth_top_length / 2, gear_radius + tooth_depth)
+    .moveTo(-tooth_base_length / 2, gear_radius)
+    .lineTo(tooth_base_length / 2, gear_radius)
+    .lineTo(0, gear_radius + tooth_depth)  # Pointy tip at gear_radius + tooth_depth
     .close()
     .extrude(gear_height)
 )
 
-# Create teeth using polarArray and combine with gear body
+# Create teeth by rotating and unioning with gear body
 gear_with_teeth = gear_body
 for i in range(num_teeth):
     angle = i * 360 / num_teeth
@@ -50,6 +49,7 @@ base = (
     cq.Workplane("XY")
     .circle(base_diameter / 2)
     .extrude(base_height)
+    .translate((0, 0, -base_height))  # Move base below gear (z=0 is bottom of gear)
 )
 
 # Create hollow pipe on top of gear
@@ -77,6 +77,6 @@ hole = (
 final_model = full_model.cut(hole)
 
 # Export as STL
-cq.exporters.export(final_model, "custom_gear_correct.stl")
+cq.exporters.export(final_model, "custom_gear_pointy_teeth.stl")
 
-print("✅ Exported: custom_gear_correct.stl")
+print("✅ Exported: custom_gear_pointy_teeth.stl")
