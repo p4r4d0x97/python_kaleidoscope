@@ -1,52 +1,51 @@
 import cadquery as cq
-import math
 
-# Parameters (edit as needed)
+# Parameters
 gear_height = 10
 num_teeth = 20
-tooth_top_length = 2  # approx tip-to-tip length
+tooth_top_length = 2
 outer_diameter = 40
 inner_diameter = 10
 pipe_height = 15
 base_height = 5
 base_diameter = 50
 
-# Derived values
+# Derived
 gear_radius = outer_diameter / 2
-tooth_angle = 360 / num_teeth
-tooth_depth = 2  # how much the tooth sticks out from gear radius
+tooth_depth = 2
 
-# Create base gear body
+# Gear body (cylinder without teeth)
 gear_body = (
     cq.Workplane("XY")
     .circle(gear_radius - tooth_depth)
     .extrude(gear_height)
 )
 
-# Create one custom tooth shape (rounded triangle-style)
-tooth = (
+# Create teeth directly on the Workplane using polarArray
+teeth = (
     cq.Workplane("XY")
     .moveTo(0, gear_radius - tooth_depth)
     .lineTo(tooth_top_length / 2, gear_radius + tooth_depth)
     .lineTo(-tooth_top_length / 2, gear_radius + tooth_depth)
     .close()
     .extrude(gear_height)
+    .faces(">Z")
+    .workplane(centerOption="CenterOfMass")
+    .polarArray(0, 0, 360, num_teeth)
 )
 
-# Pattern the teeth around the gear
-teeth = tooth.pattern(circle=gear_radius - tooth_depth, count=num_teeth, angle=360)
-
-# Combine teeth and gear
+# Combine gear and teeth
 gear_with_teeth = gear_body.union(teeth)
 
-# Add the pipe on top
+# Pipe on top
 pipe = (
     cq.Workplane("XY")
     .circle(inner_diameter / 2)
     .extrude(pipe_height)
+    .translate((0, 0, gear_height))
 )
 
-# Add the base underneath
+# Base under the gear
 base = (
     cq.Workplane("XY")
     .circle(base_diameter / 2)
@@ -54,16 +53,18 @@ base = (
 )
 
 # Combine all parts
-model = base.union(gear_with_teeth).union(pipe.translate((0, 0, gear_height)))
+full_model = base.union(gear_with_teeth).union(pipe)
 
-# Drill hole through everything
+# Drill a hole through everything
 hole = (
     cq.Workplane("XY")
     .circle(inner_diameter / 2)
     .extrude(pipe_height + gear_height + base_height)
 )
 
-final_model = model.cut(hole)
+final_model = full_model.cut(hole)
 
-# Export to STL
-cq.exporters.export(final_model, "custom_gear_fixed.stl")
+# Export as STL
+cq.exporters.export(final_model, "custom_gear_correct.stl")
+
+print("✅ Exported: custom_gear_correct.stl")
