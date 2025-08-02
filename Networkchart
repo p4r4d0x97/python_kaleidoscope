@@ -1,4 +1,5 @@
 from flask import Flask, render_template, request, Response
+import json
 from flask_socketio import SocketIO, emit
 import sqlite3
 import ipaddress
@@ -15,6 +16,12 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret!'
 socketio = SocketIO(app, async_mode='threading')
 
+# VLAN definitions
+vlans = [
+    {'id': 10, 'network': '192.168.1.0/24'},
+    {'id': 20, 'network': '192.168.2.0/24'},
+    {'id': 30, 'network': '192.168.3.0/24'}
+]
 
 # Database initialization
 def init_db():
@@ -25,12 +32,6 @@ def init_db():
         c.execute('''CREATE TABLE IF NOT EXISTS session_history
                      (id INTEGER PRIMARY KEY AUTOINCREMENT, ip TEXT, start_time TEXT, end_time TEXT)''')
         conn.commit()
-
-vlans = [
-    {'id': 10, 'network': '192.168.1.0/24'},
-    {'id': 20, 'network': '192.168.2.0/24'},
-    {'id': 30, 'network': '192.168.3.0/24'}
-]
 
 def get_all_ips(sort_column='ip', sort_direction='asc'):
     ips = []
@@ -197,23 +198,22 @@ def index():
             filtered.append(ip)
 
     summary = {
-        'online': sum(1 for ip in filtered if ip['status']=='online'),
-        'offline': sum(1 for ip in filtered if ip['status']=='offline'),
+        'online': sum(1 for ip in filtered if ip['status'] == 'online'),
+        'offline': sum(1 for ip in filtered if ip['status'] == 'offline'),
         'last_checked': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     }
     total = len(filtered)
-    pages = (total + per_page - 1)//per_page
-    start = (page-1)*per_page
-    end = start+per_page
+    pages = (total + per_page - 1) // per_page
+    start = (page - 1) * per_page
+    end = start + per_page
     page_ips = filtered[start:end]
 
     return render_template('index.html',
-        ips=page_ips, vlans=[v['id'] for v in vlans],
-        refresh_interval=refresh, page=page, total_pages=pages,
-        total_ips=total, vlan_filter=vlan_filter,
-        ip_filter=ip_filter, status_filter=status_filter,
-        summary=summary
-    )
+                           ips=page_ips, vlans=[v['id'] for v in vlans],
+                           refresh_interval=refresh, page=page, total_pages=pages,
+                           total_ips=total, vlan_filter=vlan_filter,
+                           ip_filter=ip_filter, status_filter=status_filter,
+                           summary=summary)
 
 @app.route('/export')
 def export():
@@ -231,17 +231,17 @@ def export():
 
     output = io.StringIO()
     w = csv.writer(output)
-    w.writerow(['IP Address','VLAN','Status','Last Seen','Uptime Start','Last Status Change'])
+    w.writerow(['IP Address', 'VLAN', 'Status', 'Last Seen', 'Uptime Start', 'Last Status Change'])
     for ip in filtered:
-        w.writerow([ip['ip'],ip['vlan'],ip['status'],ip['last_seen'],ip['uptime_start'],ip['last_status_change']])
+        w.writerow([ip['ip'], ip['vlan'], ip['status'], ip['last_seen'], ip['uptime_start'], ip['last_status_change']])
     return Response(output.getvalue(), mimetype='text/csv',
-                    headers={'Content-Disposition':'attachment; filename=ip_status.csv'})
+                    headers={'Content-Disposition': 'attachment; filename=ip_status.csv'})
 
 @app.route('/history/<ip>')
 def history(ip):
     with sqlite3.connect('ip_status.db') as conn:
         c = conn.cursor()
-        c.execute('SELECT start_time,end_time FROM session_history WHERE ip=? ORDER BY start_time DESC', (ip,))
+        c.execute('SELECT start_time, end_time FROM session_history WHERE ip=? ORDER BY start_time DESC', (ip,))
         raw = c.fetchall()
     history = []
     for start, end in raw:
@@ -255,18 +255,47 @@ def history(ip):
         })
     return render_template('history.html', ip=ip, history=history)
 
+@app.route('/visualize')
+def visualize():
+    vlan_filter = request.args.get('vlan', '')
+    ip_filter = request.args.get('ip', '')
+    status_filter = request.args.get('status', '')
+    sort = request.args.get('sort', 'ip')
+    direction = request.args.get('dir', 'asc')
+
+    ips = get_all_ips(sort, direction)
+    filtered_ips = [ip for ip in ips if
+                    (not vlan_filter or str(ip['vlan']) == vlan_filter) and
+                    (not ip_filter or ip_filter in ip['ip']) and
+                    (not status_filter or ip['status'] == status_filter)]
+
+    vlan_nodes = [{'id': f'vlan_{vlan["id"]}', 'type': 'vlan', 'vlan': vlan['id']} for vlan in vlans]
+    ip_nodes = [{
+        'id': ip['ip'],
+        'type': 'ip',
+        'vlan': ip['vlan'],
+        'status': ip['status']
+    } for ip in filtered_ips]
+    nodes = vlan_nodes + ip_nodes
+    links = [{'source': f'vlan_{ip["vlan"]}', 'target': ip['ip']} for ip in filtered_ips]
+
+    return render_template('visualize.html',
+                           nodes=json.dumps(nodes),
+                           links=json.dumps(links),
+                           vlans=vlans)
+
 @socketio.on('connect')
 def handle_connect():
-    emit('connected', {'message':'Connected to notifications'})
+    emit('connected', {'message': 'Connected to notifications'})
 
 @socketio.on('manual_refresh')
 def handle_manual_refresh(data):
     ips = get_all_ips()
     filt = []
     for ip in ips:
-        if ((not data.get('vlan') or str(ip['vlan'])==data.get('vlan')) and
+        if ((not data.get('vlan') or str(ip['vlan']) == data.get('vlan')) and
             (not data.get('ip') or data.get('ip') in ip['ip']) and
-            (not data.get('status') or ip['status']==data.get('status'))):
+            (not data.get('status') or ip['status'] == data.get('status'))):
             filt.append(ip)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
