@@ -155,6 +155,7 @@
         <button onclick="exportCSV()" class="bg-green-500 text-white px-4 py-2 rounded text-base">Export CSV</button>
         <button id="refresh-now-button" onclick="refreshNow()"
                 class="bg-yellow-500 text-white px-4 py-2 rounded text-base">Refresh Now</button>
+        <a href="/visualize" class="bg-purple-500 text-white px-4 py-2 rounded text-base hover:bg-purple-600">Network Visualization</a>
         <span id="ping-indicator" class="text-sm font-medium text-gray-700"></span>
       </div>
     </div>
