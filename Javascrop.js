@@ -1,84 +1,55 @@
-// Sample list of MAC addresses to check
-const macList = [
-  "00:14:22:01:23:45",
-  "00:14:22:67:89:AB",
-  "00:14:22:99:AA:BB"
-  // Add more MAC addresses here
+// === Replace with your NAC request URL ===
+const REQUEST_URL = "https://your-nac-server/sections/list/list";  
+
+// === List of MAC addresses you want to check ===
+const macs = [
+  "b8:a4:4f:ec:11:5a", 
+  "00:11:22:33:44:55"
 ];
 
-// URL of the server API endpoint (without query params)
-const baseApiUrl = "https://your-server.com/api/check-mac";
-
-// Function to build the payload dynamically (excluding empty or undefined fields)
-function buildPayload(mac) {
-  const payload = {
-    macAddress: mac,
-    deviceType: "Laptop",  // Example field with value
-    userId: "12345",       // Example field with value
-    timestamp: new Date().toISOString(),  // Example dynamic field
-    location: "",          // Empty field
-    status: null           // Empty field
-  };
-
-  // Exclude fields that are empty or null
-  const cleanPayload = Object.fromEntries(
-    Object.entries(payload).filter(([key, value]) => value != null && value !== "")
-  );
-
-  return cleanPayload;
-}
-
-// Function to build the form data (application/x-www-form-urlencoded)
-function buildFormData() {
-  // You can adjust these fields to match your requirements
-  const formData = new URLSearchParams();
-  formData.append("h", "nom/list/index");
-  formData.append("page", "mod_nom_iface_list");
-
-  return formData;
-}
-
-// Function to send a request and check if the MAC is present
+// === Function to check if MAC is in NAC ===
 async function checkMac(mac) {
-  // Build the payload for form data and the JSON body
-  const formData = buildFormData();
-  const payload = buildPayload(mac);
+  const formData = new URLSearchParams();
+  formData.append("h", "nom/list/index&page=mod_nom_iface_list");
+  formData.append("page", "mod_nom_iface_list");
+  formData.append("section", "nom");
+  formData.append("list", "index");
+  formData.append("search_nomiface_fullname", "");
+  formData.append("search_nomiface_main", "");
+  formData.append("search_nomiface_ip_addr", "");
+  formData.append("search_nomiface_ip6_addr", "");
+  formData.append("search_nomiface_folder_name", "");
+  formData.append("search_nomiface_netobj_name", mac);  // Inject MAC here
+  formData.append("search_nomiface_main_mac", "");
+  formData.append("search_connected_port_nonmetobj_name", "");
+  formData.append("search_connected_port_name", "");
+  formData.append("search_nomiface_name", "");
+  formData.append("record_offset", "0");
+  formData.append("order_column", "nomiface_fullname");
+  formData.append("order_dir", "ASC");
 
-  // Add query string parameters to the URL (action=section/list/list)
-  const url = `${baseApiUrl}?action=section/list/list&macAddress=${encodeURIComponent(mac)}&userId=12345`;
+  const response = await fetch(REQUEST_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      // 🔑 Important: If the request in DevTools had cookies, auth headers, or CSRF token,
+      // copy them here. Example:
+      // "Cookie": "PHPSESSID=xxxx; anothercookie=yyyy"
+    },
+    body: formData.toString()
+  });
 
-  try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded', // Important for form data
-      },
-      body: formData.toString()  // Send the form data as a URL-encoded string
-    });
-
-    if (response.ok) {
-      const responseData = await response.json();
-
-      // Check if 'items' is not empty
-      if (responseData.items && responseData.items.length > 0) {
-        console.log(`${mac} is found on the server.`);
-      } else {
-        console.log(`${mac} is not found on the server.`);
-      }
-    } else {
-      console.log(`Error checking ${mac}: ${response.status}`);
-    }
-  } catch (error) {
-    console.log(`Error checking ${mac}:`, error);
+  const data = await response.json();
+  if (data.items && data.items.length > 0) {
+    console.log(`✅ ${mac} FOUND`);
+  } else {
+    console.log(`❌ ${mac} NOT found`);
   }
 }
 
-// Loop through all MAC addresses and check each one
-async function checkMacs() {
-  for (let mac of macList) {
+// === Run checks for all MACs ===
+(async () => {
+  for (let mac of macs) {
     await checkMac(mac);
   }
-}
-
-// Run the check
-checkMacs();
+})();
