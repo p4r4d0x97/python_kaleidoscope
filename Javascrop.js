@@ -6,16 +6,38 @@ const macList = [
   // Add more MAC addresses here
 ];
 
-// URL of the server API endpoint
-const apiUrl = "https://your-server.com/api/check-mac";
+// URL of the server API endpoint (without query params)
+const baseApiUrl = "https://your-server.com/api/check-mac";
+
+// Function to build payload dynamically (excluding empty or undefined fields)
+function buildPayload(mac) {
+  const payload = {
+    macAddress: mac,
+    deviceType: "Laptop",  // Example field with value
+    userId: "12345",       // Example field with value
+    timestamp: new Date().toISOString(),  // Example dynamic field
+    location: "",          // Empty field
+    status: null           // Empty field
+  };
+
+  // Exclude fields that are empty or null
+  const cleanPayload = Object.fromEntries(
+    Object.entries(payload).filter(([key, value]) => value != null && value !== "")
+  );
+
+  return JSON.stringify(cleanPayload);
+}
 
 // Function to send a request and check if the MAC is present
 async function checkMac(mac) {
-  // Create the payload (adjust to your server's expected format)
-  const payload = JSON.stringify({ macAddress: mac });
+  // Build the payload excluding empty fields
+  const payload = buildPayload(mac);
+
+  // Add query string parameters to the URL (action=section/list/list)
+  const url = `${baseApiUrl}?action=section/list/list&macAddress=${encodeURIComponent(mac)}&userId=12345`; 
 
   try {
-    const response = await fetch(apiUrl, {
+    const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
