@@ -9,7 +9,7 @@ const macList = [
 // URL of the server API endpoint (without query params)
 const baseApiUrl = "https://your-server.com/api/check-mac";
 
-// Function to build payload dynamically (excluding empty or undefined fields)
+// Function to build the payload dynamically (excluding empty or undefined fields)
 function buildPayload(mac) {
   const payload = {
     macAddress: mac,
@@ -25,25 +25,35 @@ function buildPayload(mac) {
     Object.entries(payload).filter(([key, value]) => value != null && value !== "")
   );
 
-  return JSON.stringify(cleanPayload);
+  return cleanPayload;
+}
+
+// Function to build the form data (application/x-www-form-urlencoded)
+function buildFormData() {
+  // You can adjust these fields to match your requirements
+  const formData = new URLSearchParams();
+  formData.append("h", "nom/list/index");
+  formData.append("page", "mod_nom_iface_list");
+
+  return formData;
 }
 
 // Function to send a request and check if the MAC is present
 async function checkMac(mac) {
-  // Build the payload excluding empty fields
+  // Build the payload for form data and the JSON body
+  const formData = buildFormData();
   const payload = buildPayload(mac);
 
   // Add query string parameters to the URL (action=section/list/list)
-  const url = `${baseApiUrl}?action=section/list/list&macAddress=${encodeURIComponent(mac)}&userId=12345`; 
+  const url = `${baseApiUrl}?action=section/list/list&macAddress=${encodeURIComponent(mac)}&userId=12345`;
 
   try {
     const response = await fetch(url, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        // Add any additional headers if necessary (e.g., authentication tokens)
+        'Content-Type': 'application/x-www-form-urlencoded', // Important for form data
       },
-      body: payload
+      body: formData.toString()  // Send the form data as a URL-encoded string
     });
 
     if (response.ok) {
