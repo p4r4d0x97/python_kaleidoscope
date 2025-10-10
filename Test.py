@@ -2,38 +2,51 @@ import sys
 import crcmod
 
 def calculate_checksums(data):
-    """Calculate various 8-bit checksums for the first 22 bytes."""
-    results = {}
+    """Calculate 8-bit and 16-bit checksums for different byte ranges."""
+    results = {'8bit': {}, '16bit_22_23': {}, '16bit_21_22': {}}
     
-    # XOR of all bytes
-    xor_result = 0
-    for b in data[:22]:
-        xor_result ^= b
-    results['XOR'] = xor_result
-    
-    # Sum modulo 256
-    sum_256 = sum(data[:22]) % 256
-    results['Sum mod 256'] = sum_256
-    
-    # Sum modulo 255
-    sum_255 = sum(data[:22]) % 255
-    results['Sum mod 255'] = sum_255
-    
-    # Simple sum (lower 8 bits)
-    simple_sum = sum(data[:22]) & 0xFF
-    results['Simple sum'] = simple_sum
-    
-    # CRC-8-CCITT (poly=0x07, init=0x00, xorout=0x00)
+    # 8-bit checksums (over bytes 0-22, compare to byte 23)
+    bytes_0_22 = data[:22]
+    results['8bit']['XOR'] = 0
+    for b in bytes_0_22:
+        results['8bit']['XOR'] ^= b
+    results['8bit']['Sum mod 256'] = sum(bytes_0_22) % 256
+    results['8bit']['Sum mod 255'] = sum(bytes_0_22) % 255
+    results['8bit']['Simple sum'] = sum(bytes_0_22) & 0xFF
     crc8_ccitt = crcmod.predefined.mkCrcFun('crc-8')
-    results['CRC-8-CCITT'] = crc8_ccitt(data[:22])
-    
-    # CRC-8-Dallas/Maxim (poly=0x31, init=0x00, xorout=0x00)
+    results['8bit']['CRC-8-CCITT'] = crc8_ccitt(bytes_0_22)
     crc8_dallas = crcmod.mkCrcFun(0x131, initCrc=0x00, xorOut=0x00)
-    results['CRC-8-Dallas'] = crc8_dallas(data[:22])
+    results['8bit']['CRC-8-Dallas'] = crc8_dallas(bytes_0_22)
+    
+    # 16-bit checksums (over bytes 0-21, compare to bytes 22-23)
+    bytes_0_21 = data[:21]
+    results['16bit_22_23']['XOR'] = 0
+    for i in range(0, len(bytes_0_21), 2):
+        word = int.from_bytes(bytes_0_21[i:i+2], 'big') if i+1 < len(bytes_0_21) else bytes_0_21[i]
+        results['16bit_22_23']['XOR'] ^= word
+    results['16bit_22_23']['XOR'] &= 0xFFFF
+    results['16bit_22_23']['Sum mod 65536'] = sum(bytes_0_21) % 65536
+    results['16bit_22_23']['Simple sum'] = sum(bytes_0_21) & 0xFFFF
+    crc16_ccitt = crcmod.predefined.mkCrcFun('crc-ccitt-false')
+    results['16bit_22_23']['CRC-16-CCITT'] = crc16_ccitt(bytes_0_21)
+    crc16_modbus = crcmod.mkCrcFun(0x18005, initCrc=0xFFFF, xorOut=0x0000)
+    results['16bit_22_23']['CRC-16-Modbus'] = crc16_modbus(bytes_0_21)
+    
+    # 16-bit checksums (over bytes 0-20, compare to bytes 21-22)
+    bytes_0_20 = data[:20]
+    results['16bit_21_22']['XOR'] = 0
+    for i in range(0, len(bytes_0_20), 2):
+        word = int.from_bytes(bytes_0_20[i:i+2], 'big') if i+1 < len(bytes_0_20) else bytes_0_20[i]
+        results['16bit_21_22']['XOR'] ^= word
+    results['16bit_21_22']['XOR'] &= 0xFFFF
+    results['16bit_21_22']['Sum mod 65536'] = sum(bytes_0_20) % 65536
+    results['16bit_21_22']['Simple sum'] = sum(bytes_0_20) & 0xFFFF
+    results['16bit_21_22']['CRC-16-CCITT'] = crc16_ccitt(bytes_0_20)
+    results['16bit_21_22']['CRC-16-Modbus'] = crc16_modbus(bytes_0_20)
     
     return results
 
-def parse_iot_packet(hex_string):
+def parse_iot_packet(hex_string, endian='big'):
     try:
         # Convert hex string to bytes
         data = bytes.fromhex(hex_string)
@@ -49,44 +62,84 @@ def parse_iot_packet(hex_string):
         # Sequence number (byte 11)
         seq = data[11]
         
-        # Counter (bytes 12-13, little-endian uint16)
-        counter = int.from_bytes(data[12:14], 'little')
+        # Counter (bytes 12-13)
+        counter_be = int.from_bytes(data[12:14], 'big')
+        counter_le = int.from_bytes(data[12:14], 'little')
+        counter = counter_be if endian == 'big' else counter_le
+        counter_hex = f"0x{counter_be:04x}" if endian == 'big' else f"0x{counter_le:04x}"
         
-        # Other value (bytes 14-15, little-endian uint16, possibly RSSI/battery)
-        other_value = int.from_bytes(data[14:16], 'little')
+        # Other value (bytes 14-15, possibly RSSI/battery)
+        other_be = int.from_bytes(data[14:16], 'big')
+        other_le = int.from_bytes(data[14:16], 'little')
+        other = other_be if endian == 'big' else other_le
+        other_hex = f"0x{other_be:04x}" if endian == 'big' else f"0x{other_le:04x}"
         
-        # Status byte (byte 16): 0xFF = Pressed, else = Not Pressed
-        status_byte = data[16]
-        status = "Pressed" if status_byte == 0xFF else "Not Pressed"
+        # Status bytes (byte 16 and 17 as alternatives)
+        status_byte_16 = data[16]
+        status_16 = "Pressed" if status_byte_16 == 0xFF else "Not Pressed"
+        status_byte_17 = data[17]
+        status_17 = "Pressed" if status_byte_17 == 0x80 else "Not Pressed"
         
-        # Additional data/flags (bytes 17-21)
-        additional_data = data[17:22].hex(' ')
+        # Additional data/flags (bytes 18-21 if byte 17 is status, else 17-21)
+        additional_data = data[18:22].hex(' ') if status_byte_17 == 0x80 else data[17:22].hex(' ')
         
-        # Checksum (byte 22)
-        actual_checksum = data[22]
-        
-        # Brute-force checksums
+        # Checksum: 8-bit (byte 23), 16-bit (bytes 22-23 or 21-22)
+        actual_checksum_8bit = data[22]
+        actual_checksum_16bit_22_23 = int.from_bytes(data[21:23], 'big')
+        actual_checksum_16bit_21_22 = int.from_bytes(data[20:22], 'big')
         checksums = calculate_checksums(data)
-        checksum_valid = "Not verified"
-        for method, value in checksums.items():
-            if value == actual_checksum:
-                checksum_valid = f"Verified with {method}"
+        
+        # Verify 8-bit checksum
+        checksum_8bit_valid = "Not verified"
+        for method, value in checksums['8bit'].items():
+            if value == actual_checksum_8bit:
+                checksum_8bit_valid = f"Verified with {method}"
                 break
         
-        # Output in human-readable format
+        # Verify 16-bit checksum (bytes 22-23)
+        checksum_16bit_22_23_valid = "Not verified"
+        for method, value in checksums['16bit_22_23'].items():
+            if value == actual_checksum_16bit_22_23:
+                checksum_16bit_22_23_valid = f"Verified with {method}"
+                break
+        
+        # Verify 16-bit checksum (bytes 21-22)
+        checksum_16bit_21_22_valid = "Not verified"
+        for method, value in checksums['16bit_21_22'].items():
+            if value == actual_checksum_16bit_21_22:
+                checksum_16bit_21_22_valid = f"Verified with {method}"
+                break
+        
+        # Output
         print("Parsed IoT Packet:")
         print(f"Header: {header.hex(' ')} (fixed identifier)")
         print(f"Sequence Number: 0x{seq:02x} ({seq})")
-        print(f"Counter: {counter} (0x{counter:04x})")
-        print(f"Other Value: {other_value} (0x{other_value:04x})")
-        print(f"Status Byte: 0x{status_byte:02x}")
-        print(f"Status: {status}")
+        print(f"Counter ({endian}-endian): {counter} ({counter_hex})")
+        print(f"Counter ({'little' if endian == 'big' else 'big'}-endian): "
+              f"{counter_le if endian == 'big' else counter_be} "
+              f"(0x{counter_le:04x} if endian == 'big' else 0x{counter_be:04x})")
+        print(f"Other Value ({endian}-endian): {other} ({other_hex})")
+        print(f"Other Value ({'little' if endian == 'big' else 'big'}-endian): "
+              f"{other_le if endian == 'big' else other_be} "
+              f"(0x{other_le:04x} if endian == 'big' else 0x{other_be:04x})")
+        print(f"Status Byte (byte 16): 0x{status_byte_16:02x} ({status_16})")
+        print(f"Status Byte (byte 17, alternative): 0x{status_byte_17:02x} ({status_17})")
         print(f"Additional Data: {additional_data}")
-        print(f"Checksum: 0x{actual_checksum:02x} ({checksum_valid})")
-        if checksum_valid == "Not verified":
-            print("Checksum possibilities:")
-            for method, value in checksums.items():
+        print(f"8-bit Checksum (byte 23): 0x{actual_checksum_8bit:02x} ({checksum_8bit_valid})")
+        if checksum_8bit_valid == "Not verified":
+            print("8-bit Checksum possibilities:")
+            for method, value in checksums['8bit'].items():
                 print(f"  {method}: 0x{value:02x}")
+        print(f"16-bit Checksum (bytes 22-23): 0x{actual_checksum_16bit_22_23:04x} ({checksum_16bit_22_23_valid})")
+        if checksum_16bit_22_23_valid == "Not verified":
+            print("16-bit Checksum (22-23) possibilities:")
+            for method, value in checksums['16bit_22_23'].items():
+                print(f"  {method}: 0x{value:04x}")
+        print(f"16-bit Checksum (bytes 21-22): 0x{actual_checksum_16bit_21_22:04x} ({checksum_16bit_21_22_valid})")
+        if checksum_16bit_21_22_valid == "Not verified":
+            print("16-bit Checksum (21-22) possibilities:")
+            for method, value in checksums['16bit_21_22'].items():
+                print(f"  {method}: 0x{value:04x}")
     
     except ValueError as e:
         print(f"Error: {e}")
@@ -96,8 +149,17 @@ def parse_iot_packet(hex_string):
 # Main: Get input from user
 if __name__ == "__main__":
     # Install crcmod if needed: pip install crcmod
+    endian = 'big'  # Default to big-endian per user expectation
+    if len(sys.argv) > 2 and sys.argv[2] in ['big', 'little']:
+        endian = sys.argv[2]
+    elif len(sys.argv) == 1:
+        print("Enter endianness (big/little, default: big): ", end='')
+        user_endian = input().strip().lower()
+        if user_endian in ['big', 'little']:
+            endian = user_endian
+    
     if len(sys.argv) > 1:
         hex_input = sys.argv[1]
     else:
         hex_input = input("Enter the 23-byte hex string: ").strip()
-    parse_iot_packet(hex_input)
+    parse_iot_packet(hex_input, endian)
