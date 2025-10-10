@@ -1,121 +1,103 @@
-import binascii
+import sys
+import crcmod
 
-# --- Checksum & CRC functions ---
-
-def crc16_ccitt_false(data):
-    crc = 0xFFFF
-    for b in data:
-        crc ^= (b << 8)
-        for _ in range(8):
-            if (crc & 0x8000):
-                crc = ((crc << 1) ^ 0x1021) & 0xFFFF
-            else:
-                crc = (crc << 1) & 0xFFFF
-    return crc
-
-def crc16_xmodem(data):
-    crc = 0x0000
-    for b in data:
-        crc ^= b << 8
-        for _ in range(8):
-            if (crc & 0x8000):
-                crc = ((crc << 1) ^ 0x1021) & 0xFFFF
-            else:
-                crc = (crc << 1) & 0xFFFF
-    return crc
-
-def crc16_modbus(data):
-    crc = 0xFFFF
-    for b in data:
-        crc ^= b
-        for _ in range(8):
-            if (crc & 0x0001):
-                crc = (crc >> 1) ^ 0xA001
-            else:
-                crc >>= 1
-    return crc
-
-def crc32(data):
-    return binascii.crc32(data) & 0xFFFFFFFF
-
-def crc8(data, poly=0x07, init=0x00):
-    crc = init
-    for b in data:
-        crc ^= b
-        for _ in range(8):
-            if crc & 0x80:
-                crc = ((crc << 1) ^ poly) & 0xFF
-            else:
-                crc = (crc << 1) & 0xFF
-    return crc
-
-# --- Checksum matching logic ---
-
-def try_checksums(packet_bytes):
-    packet_len = len(packet_bytes)
-    results = []
-
-    if packet_len < 3:
-        return ["Packet too short."]
-
-    for offset in range(packet_len - 2, packet_len - 1):  # Tail 2 bytes
-        data = packet_bytes[:offset]
-        tail = packet_bytes[offset:]
-        tail_be = int.from_bytes(tail, 'big')
-        tail_le = int.from_bytes(tail, 'little')
-
-        checks = [
-            ("CRC16-CCITT (False)", crc16_ccitt_false(data)),
-            ("CRC16-XModem", crc16_xmodem(data)),
-            ("CRC16-MODBUS", crc16_modbus(data)),
-            ("CRC32", crc32(data) & 0xFFFF),  # last 2 bytes only
-            ("CRC8", crc8(data)),
-            ("Simple Sum mod 65536", sum(data) & 0xFFFF),
-            ("Simple Sum mod 256", sum(data) & 0xFF),
-        ]
-
-        for name, val in checks:
-            if val == tail_be:
-                results.append(f"✅ Match ({name}) — Big Endian at offset {offset}")
-            elif val == tail_le:
-                results.append(f"✅ Match ({name}) — Little Endian at offset {offset}")
-
-    if not results:
-        results.append("❌ No known checksum match found.")
-
+def calculate_checksums(data):
+    """Calculate various 8-bit checksums for the first 22 bytes."""
+    results = {}
+    
+    # XOR of all bytes
+    xor_result = 0
+    for b in data[:22]:
+        xor_result ^= b
+    results['XOR'] = xor_result
+    
+    # Sum modulo 256
+    sum_256 = sum(data[:22]) % 256
+    results['Sum mod 256'] = sum_256
+    
+    # Sum modulo 255
+    sum_255 = sum(data[:22]) % 255
+    results['Sum mod 255'] = sum_255
+    
+    # Simple sum (lower 8 bits)
+    simple_sum = sum(data[:22]) & 0xFF
+    results['Simple sum'] = simple_sum
+    
+    # CRC-8-CCITT (poly=0x07, init=0x00, xorout=0x00)
+    crc8_ccitt = crcmod.predefined.mkCrcFun('crc-8')
+    results['CRC-8-CCITT'] = crc8_ccitt(data[:22])
+    
+    # CRC-8-Dallas/Maxim (poly=0x31, init=0x00, xorout=0x00)
+    crc8_dallas = crcmod.mkCrcFun(0x131, initCrc=0x00, xorOut=0x00)
+    results['CRC-8-Dallas'] = crc8_dallas(data[:22])
+    
     return results
 
-# --- Entry point ---
-
-def analyze_packet(hex_str):
-    hex_str = hex_str.strip().replace(" ", "")
+def parse_iot_packet(hex_string):
     try:
-        packet = bytes.fromhex(hex_str)
-    except ValueError:
-        print(f"❌ Invalid hex: {hex_str}")
-        return
+        # Convert hex string to bytes
+        data = bytes.fromhex(hex_string)
+        if len(data) != 23:
+            raise ValueError("Input must be a 23-byte hex string (46 characters).")
+        
+        # Expected header (bytes 0-10)
+        expected_header = bytes.fromhex("05 a0 ba 44 ba 3d f2 0e 00 10 01")
+        header = data[0:11]
+        if header != expected_header:
+            print("Warning: Header does not match expected value.")
+        
+        # Sequence number (byte 11)
+        seq = data[11]
+        
+        # Counter (bytes 12-13, little-endian uint16)
+        counter = int.from_bytes(data[12:14], 'little')
+        
+        # Other value (bytes 14-15, little-endian uint16, possibly RSSI/battery)
+        other_value = int.from_bytes(data[14:16], 'little')
+        
+        # Status byte (byte 16): 0xFF = Pressed, else = Not Pressed
+        status_byte = data[16]
+        status = "Pressed" if status_byte == 0xFF else "Not Pressed"
+        
+        # Additional data/flags (bytes 17-21)
+        additional_data = data[17:22].hex(' ')
+        
+        # Checksum (byte 22)
+        actual_checksum = data[22]
+        
+        # Brute-force checksums
+        checksums = calculate_checksums(data)
+        checksum_valid = "Not verified"
+        for method, value in checksums.items():
+            if value == actual_checksum:
+                checksum_valid = f"Verified with {method}"
+                break
+        
+        # Output in human-readable format
+        print("Parsed IoT Packet:")
+        print(f"Header: {header.hex(' ')} (fixed identifier)")
+        print(f"Sequence Number: 0x{seq:02x} ({seq})")
+        print(f"Counter: {counter} (0x{counter:04x})")
+        print(f"Other Value: {other_value} (0x{other_value:04x})")
+        print(f"Status Byte: 0x{status_byte:02x}")
+        print(f"Status: {status}")
+        print(f"Additional Data: {additional_data}")
+        print(f"Checksum: 0x{actual_checksum:02x} ({checksum_valid})")
+        if checksum_valid == "Not verified":
+            print("Checksum possibilities:")
+            for method, value in checksums.items():
+                print(f"  {method}: 0x{value:02x}")
+    
+    except ValueError as e:
+        print(f"Error: {e}")
+    except Exception as e:
+        print(f"Unexpected error: {e}")
 
-    print(f"\n📦 Analyzing Packet: {hex_str}")
-    print(f"Length: {len(packet)} bytes")
-    results = try_checksums(packet)
-    for res in results:
-        print(res)
-
-# --- Example usage with your packets ---
-
+# Main: Get input from user
 if __name__ == "__main__":
-    test_packets = [
-        "05a0ba44ba3df20e001001076b290d618000800000049d",
-        "05a0ba44ba3df20e0010010c7ed03d00ff00000000961e",
-        "05a0ba44ba3df20e0010010d68822d00ff80ff0000fe9c"
-    ]
-
-    for hex_packet in test_packets:
-        analyze_packet(hex_packet)
-
-    # Optional: input more
-    while True:
-        user = input("\nEnter a hex packet to test (or 'q' to quit): ").strip()
-        if user.lower() == 'q':
-            break
-        analyze_packet(user)
+    # Install crcmod if needed: pip install crcmod
+    if len(sys.argv) > 1:
+        hex_input = sys.argv[1]
+    else:
+        hex_input = input("Enter the 23-byte hex string: ").strip()
+    parse_iot_packet(hex_input)
