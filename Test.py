@@ -1,37 +1,50 @@
-import binascii
-import base64
+import struct
 
-def decode_udp_payload(hex_input):
-    try:
-        # Clean the input (remove spaces, colons, etc.)
-        hex_input = hex_input.strip().replace(" ", "").replace(":", "")
-        
-        # Convert hex to bytes
-        byte_data = bytes.fromhex(hex_input)
+def parse_iot_packet(hex_input):
+    data = bytes.fromhex(hex_input.strip().replace(" ", "").replace(":", ""))
+    print(f"Total bytes: {len(data)}")
+    print(f"Raw data: {data.hex()}\n")
 
-        print("=== Raw Bytes ===")
-        print(byte_data)
+    # Example parsing: adjust indexes and formats based on your protocol
 
+    # First 4 bytes as unsigned int (device ID)
+    if len(data) >= 4:
+        device_id = struct.unpack(">I", data[0:4])[0]
+        print(f"Device ID (4 bytes, big-endian): {device_id}")
+    else:
+        print("Not enough data for Device ID (4 bytes)")
+
+    # Next 4 bytes as unsigned int (timestamp)
+    if len(data) >= 8:
+        timestamp = struct.unpack(">I", data[4:8])[0]
+        print(f"Timestamp (4 bytes, big-endian): {timestamp}")
+    else:
+        print("Not enough data for Timestamp (4 bytes)")
+
+    # Next 2 bytes as unsigned short (sensor value)
+    if len(data) >= 10:
+        sensor_val = struct.unpack(">H", data[8:10])[0]
+        print(f"Sensor Value (2 bytes, big-endian): {sensor_val}")
+    else:
+        print("Not enough data for Sensor Value (2 bytes)")
+
+    # Next 4 bytes as float (sensor reading)
+    if len(data) >= 14:
         try:
-            # Try UTF-8 decoding
-            decoded_text = byte_data.decode('utf-8')
-            print("\n=== UTF-8 Decoded Text ===")
-            print(decoded_text)
-        except UnicodeDecodeError:
-            print("\n=== UTF-8 Decoding Failed ===")
-            print("Not valid UTF-8 text. Showing byte values instead:")
-            print(list(byte_data))
+            sensor_float = struct.unpack(">f", data[10:14])[0]
+            print(f"Sensor Float (4 bytes, big-endian): {sensor_float}")
+        except Exception as e:
+            print(f"Cannot parse bytes 10-14 as float: {e}")
+    else:
+        print("Not enough data for Sensor Float (4 bytes)")
 
-        # Optional: Base64 encoding (to inspect binary)
-        b64 = base64.b64encode(byte_data).decode()
-        print("\n=== Base64 Representation ===")
-        print(b64)
+    # Remaining bytes as flags or checksum
+    if len(data) > 14:
+        flags = data[14:]
+        print(f"Flags / checksum bytes ({len(flags)} bytes): {flags.hex()}")
+    else:
+        print("No extra bytes for Flags / Checksum")
 
-    except ValueError as e:
-        print("Invalid hex input:", e)
-
-# Example usage
 if __name__ == "__main__":
-    # Example hex input (you can paste your own)
-    hex_string = input("Enter UDP hex payload (e.g. 05a0ba44ba...): ")
-    decode_udp_payload(hex_string)
+    hex_string = input("Enter UDP hex payload: ")
+    parse_iot_packet(hex_string)
