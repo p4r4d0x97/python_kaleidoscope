@@ -1,0 +1,75 @@
+# Read the list of computer names from computers.txt
+$computers = Get-Content -Path "C:\path\to\computers.txt"
+
+# List of files to search for
+$fileNames = @("fruits.txt", "food.txt", "goodtoeat.txt")
+
+# Directories to search
+$directories = @("C:\temp", "C:\test")
+
+# Function to check and remove read-only attribute if it exists
+function Remove-ReadOnly {
+    param (
+        [string]$filePath
+    )
+
+    # Get the file attributes
+    $attributes = (Get-Item $filePath).Attributes
+
+    # If the file is read-only, remove the read-only attribute
+    if ($attributes -band [System.IO.FileAttributes]::ReadOnly) {
+        Set-ItemProperty -Path $filePath -Name Attributes -Value ($attributes -bxor [System.IO.FileAttributes]::ReadOnly)
+        Write-Host "Removed read-only from: $filePath"
+    }
+}
+
+# Function to process files on a remote computer
+function Process-FilesOnRemoteComputer {
+    param (
+        [string]$computerName,
+        [string]$directory,
+        [array]$fileNames
+    )
+
+    # Use Invoke-Command to run script on remote computer
+    Invoke-Command -ComputerName $computerName -ScriptBlock {
+        param ($directory, $fileNames)
+
+        # Iterate over each file name pattern
+        foreach ($fileName in $fileNames) {
+            # Get all matching files in the directory and subdirectories
+            $files = Get-ChildItem -Path $directory -Recurse -Filter $fileName -File
+
+            foreach ($file in $files) {
+                # Check if the file is read-only, and remove the read-only attribute if needed
+                Remove-ReadOnly -filePath $file.FullName
+
+                # Read the content of the file
+                $content = Get-Content $file.FullName
+
+                # Replace 'apple' with 'orange'
+                $newContent = $content -replace 'apple', 'orange'
+
+                # Write the updated content back to the file
+                Set-Content -Path $file.FullName -Value $newContent
+
+                # Optionally, log the update
+                Write-Host "Updated file: $($file.FullName)"
+            }
+        }
+    } -ArgumentList $directory, $fileNames -Credential (Get-Credential)
+}
+
+# Iterate over each computer in the list
+foreach ($computer in $computers) {
+    Write-Host "Processing computer: $computer"
+
+    # Iterate over each directory to search
+    foreach ($directory in $directories) {
+        Write-Host "Searching in directory: $directory"
+
+        # Process files on remote computer
+        Process-FilesOnRemoteComputer -computerName $computer -directory $directory -fileNames $fileNames
+    }
+}
+
